@@ -69,30 +69,31 @@ size_t read_document_refs(util::FilePiece &fin_tokens, unordered_map<uint64_t,si
 	return n;
 }
 
-int score_documents(vector<DocumentRef> const &refs, unordered_map<uint64_t, size_t> const &df, size_t document_cnt, size_t ngram_size, util::FilePiece &in_tokens, float threshold, unsigned int n_threads, bool verbose = false) {
+int score_documents(vector<DocumentRef> const &refs, unordered_map<uint64_t, size_t> const &df, size_t document_cnt, size_t ngram_size, util::FilePiece &in_tokens, float threshold, unsigned int n_threads, size_t batch_size = 16, bool verbose = false) {
 	vector<thread> consumers;
 	
-	blocking_queue<unique_ptr<Document>> queue(n_threads * 64);
+	blocking_queue<vector<unique_ptr<Document>>> queue(n_threads * 16);
 	
 	for (unsigned int n = 0; n < n_threads; ++n)
 		consumers.push_back(thread([&queue, &refs, document_cnt, &df, threshold]() {
 			while (true) {
-				unique_ptr<Document> buffer(queue.pop());
-				
-				// Empty doc is poison
-				if (!buffer)
+				vector<unique_ptr<Document>> batch(queue.pop());
+
+				if (batch.empty())
 					break;
-				
-				DocumentRef const &buffer_ref = calculate_tfidf(*buffer, document_cnt, df);
-				
-				for (auto const &document_ref : refs) {
-					float score = calculate_alignment(document_ref, buffer_ref);
 
-					// Document not a match? Skip to the next.
-					if (score < threshold)
-						continue;
+				for (unique_ptr<Document> const &buffer : batch) {
+					DocumentRef const &buffer_ref = calculate_tfidf(*buffer, document_cnt, df);
 
-					print_score(score, document_ref, buffer_ref);
+					for (auto const &document_ref : refs) {
+						float score = calculate_alignment(document_ref, buffer_ref);
+
+						// Document not a match? Skip to the next.
+						if (score < threshold)
+							continue;
+
+						print_score(score, document_ref, buffer_ref);
+					}
 				}
 			}
 		}));
@@ -100,12 +101,15 @@ int score_documents(vector<DocumentRef> const &refs, unordered_map<uint64_t, siz
 	auto stop = [&consumers, &queue, n_threads]() {
 		// Send poison to all workers
 		for (size_t n = 0; n < n_threads; ++n)
-			queue.push(nullptr);
+			queue.push({});
 		
 		// Wait for the workers to finish
 		for (auto &consumer : consumers)
 			consumer.join();
 	};
+
+	vector<unique_ptr<Document>> batch;
+	batch.reserve(batch_size);
 	
 	for (size_t n = 1; true; ++n) {
 		unique_ptr<Document> buffer(new Document());
@@ -117,9 +121,19 @@ int score_documents(vector<DocumentRef> const &refs, unordered_map<uint64_t, siz
 
 		buffer->id = n;
 
-		// Push this document to the alignment score calculators
-		queue.push(std::move(buffer));
+		// Push this document to the batch
+		batch.push_back(std::move(buffer));
+
+		// If the batch is full, push it to the queue
+		if (batch.size() == batch_size) {
+			queue.push(std::move(batch));
+			batch.clear();
+		}
 	}
+
+	// Push any trailing files
+	if (!batch.empty())
+		queue.push(std::move(batch));
 
 	// Tell all workers there is nothing left and wait for them to stop.
 	stop();
@@ -210,5 +224,5 @@ int main(int argc, char *argv[]) {
 
 	// Start reading the other set of documents we match against
 	util::FilePiece en_tokens(vm["english-tokens"].as<std::string>().c_str());
-	return score_documents(refs, df, document_cnt, ngram_size, en_tokens, threshold, n_threads, verbose);
+	return score_documents(refs, df, document_cnt, ngram_size, en_tokens, threshold, n_threads, 64, verbose);
 }
