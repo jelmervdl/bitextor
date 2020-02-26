@@ -69,8 +69,10 @@ size_t read_document_refs(util::FilePiece &fin_tokens, unordered_map<uint64_t,si
 	return n;
 }
 
-int score_documents(vector<DocumentRef> const &refs, unordered_map<uint64_t, size_t> const &df, size_t document_cnt, size_t ngram_size, util::FilePiece &in_tokens, float threshold, unsigned int n_threads, size_t queue_size = 16, size_t batch_size = 16, bool verbose = false) {
+int score_documents(vector<DocumentRef> const &refs, unordered_map<uint64_t, size_t> const &df, size_t document_cnt, size_t ngram_size, util::FilePiece &in_tokens, float threshold, unsigned int n_threads, size_t queue_size = 16, size_t batch_size = 16, bool verbose = false)
+{
 	vector<thread> consumers;
+	consumers.reserve(n_threads);
 	
 	blocking_queue<vector<unique_ptr<Document>>> queue(n_threads * queue_size);
 	
