@@ -63,7 +63,7 @@ size_t read_document_refs(util::FilePiece &fin_tokens, unordered_map<uint64_t,si
 		
 		buffer.id = ++n;
 
-		*it++ = calculate_tfidf(buffer, document_cnt, df);
+		calculate_tfidf(buffer, *it++, document_cnt, df);
 	}
 	
 	return n;
@@ -71,79 +71,118 @@ size_t read_document_refs(util::FilePiece &fin_tokens, unordered_map<uint64_t,si
 
 int score_documents(vector<DocumentRef> const &refs, unordered_map<uint64_t, size_t> const &df, size_t document_cnt, size_t ngram_size, util::FilePiece &in_tokens, float threshold, unsigned int n_threads, size_t queue_size = 16, size_t batch_size = 16, bool verbose = false)
 {
-	vector<thread> consumers;
-	consumers.reserve(n_threads);
+	vector<thread> line_consumers;
+	line_consumers.reserve(n_threads / 2);
+
+	vector<thread> align_consumers;
+	align_consumers.reserve(n_threads / 2);
+
+	struct Line {
+		size_t n;
+		string line;
+	};
+
+	blocking_queue<vector<unique_ptr<Line>>> line_queue(n_threads * queue_size);
 	
-	blocking_queue<vector<unique_ptr<Document>>> queue(n_threads * queue_size);
-	
-	for (unsigned int n = 0; n < n_threads; ++n)
-		consumers.push_back(thread([&queue, &refs, document_cnt, &df, threshold]() {
+	blocking_queue<vector<unique_ptr<DocumentRef>>> align_queue(n_threads * queue_size);
+
+	for (unsigned int n = 0; n < n_threads / 2; ++n)
+		line_consumers.push_back(thread([&line_queue, &align_queue, &document_cnt, &df, &ngram_size]() {
 			while (true) {
-				vector<unique_ptr<Document>> batch(queue.pop());
+				vector<unique_ptr<Line>> in_batch(line_queue.pop());
+
+				if (in_batch.empty())
+					break;
+
+				vector<unique_ptr<DocumentRef>> out_batch;
+				out_batch.reserve(in_batch.size());
+
+				for (auto &line : in_batch) {
+					Document buffer;
+
+					ReadDocument(line->line, buffer, ngram_size);
+
+					unique_ptr<DocumentRef> buffer_ref(new DocumentRef());
+					calculate_tfidf(buffer, *buffer_ref, document_cnt, df);
+					out_batch.push_back(move(buffer_ref));
+				}
+
+				align_queue.push(move(out_batch));
+			}
+		}));
+	
+	for (unsigned int n = 0; n < n_threads / 2; ++n)
+		align_consumers.push_back(thread([&align_queue, &refs, &document_cnt, &df, &threshold]() {
+			while (true) {
+				vector<unique_ptr<DocumentRef>> batch(align_queue.pop());
 
 				if (batch.empty())
 					break;
 
-				for (unique_ptr<Document> const &buffer : batch) {
-					DocumentRef const &buffer_ref = calculate_tfidf(*buffer, document_cnt, df);
-
+				for (unique_ptr<DocumentRef> const &buffer : batch) {
 					for (auto const &document_ref : refs) {
-						float score = calculate_alignment(document_ref, buffer_ref);
+						float score = calculate_alignment(document_ref, *buffer);
 
 						// Document not a match? Skip to the next.
 						if (score < threshold)
 							continue;
 
-						print_score(score, document_ref, buffer_ref);
+						print_score(score, document_ref, *buffer);
 					}
 				}
 			}
 		}));
 	
-	auto stop = [&consumers, &queue, n_threads]() {
-		// Send poison to all workers
-		for (size_t n = 0; n < n_threads; ++n)
-			queue.push({});
-		
-		// Wait for the workers to finish
-		for (auto &consumer : consumers)
-			consumer.join();
-	};
-
-	vector<unique_ptr<Document>> batch;
+	vector<unique_ptr<Line>> batch;
 	batch.reserve(batch_size);
 	
 	for (size_t n = 1; true; ++n) {
-		unique_ptr<Document> buffer(new Document());
-
 		StringPiece line;
 		if (!in_tokens.ReadLineOrEOF(line))
 			break;
-		ReadDocument(line, *buffer, ngram_size);
 
-		buffer->id = n;
+		unique_ptr<Line> buffer(new Line{
+			.n = n,
+			.line = string(line.data(), line.size()) // TODO: I don't want to do this but StringPiece's backing will move on
+		});
 
 		// Push this document to the batch
 		batch.push_back(std::move(buffer));
 
 		// If the batch is full, push it to the queue
 		if (batch.size() == batch_size) {
-			queue.push(std::move(batch));
+			line_queue.push(std::move(batch));
 			batch.clear();
 		}
 	}
 
 	// Push any trailing files
 	if (!batch.empty())
-		queue.push(std::move(batch));
+		line_queue.push(std::move(batch));
 
 	// Tell all workers there is nothing left and wait for them to stop.
-	stop();
+	for (size_t i = 0; i < n_threads / 2; ++i)
+		line_queue.push({});
+
+	// Wait for all line workers to finish.
+	for (auto &line_consumer : line_consumers)
+		line_consumer.join();
+
+	// Now we know that the line workers won't push any more content, we can
+	// send the stop signal to the align workers
+	for (size_t i = 0; i < n_threads / 2; ++i)
+		align_queue.push({});
+
+	for (auto &align_consumer : align_consumers)
+		align_consumer.join();
 	
 	if (verbose)
-		cerr << "Queue performance:\n"
-		     << "  underflow: " << queue.performance().underflow << '\n'
-		     << "  overflow: " << queue.performance().overflow << endl;
+		cerr << "Read queue performance:\n"
+		     << "  underflow: " << line_queue.performance().underflow << '\n'
+		     << "  overflow: " << line_queue.performance().overflow << '\n'
+			 << "Align queue performance:\n"
+		     << "  underflow: " << align_queue.performance().underflow << '\n'
+		     << "  overflow: " << align_queue.performance().overflow << endl;
 	
 	return 0;
 }
