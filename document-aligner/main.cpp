@@ -69,10 +69,10 @@ size_t read_document_refs(util::FilePiece &fin_tokens, unordered_map<uint64_t,si
 	return n;
 }
 
-int score_documents(vector<DocumentRef> const &refs, unordered_map<uint64_t, size_t> const &df, size_t document_cnt, size_t ngram_size, util::FilePiece &in_tokens, float threshold, unsigned int n_threads, size_t batch_size = 16, bool verbose = false) {
+int score_documents(vector<DocumentRef> const &refs, unordered_map<uint64_t, size_t> const &df, size_t document_cnt, size_t ngram_size, util::FilePiece &in_tokens, float threshold, unsigned int n_threads, size_t queue_size = 16, size_t batch_size = 16, bool verbose = false) {
 	vector<thread> consumers;
 	
-	blocking_queue<vector<unique_ptr<Document>>> queue(n_threads * 16);
+	blocking_queue<vector<unique_ptr<Document>>> queue(n_threads * queue_size);
 	
 	for (unsigned int n = 0; n < n_threads; ++n)
 		consumers.push_back(thread([&queue, &refs, document_cnt, &df, threshold]() {
@@ -154,6 +154,10 @@ int main(int argc, char *argv[]) {
 	size_t df_sample_rate = 1;
 	
 	size_t ngram_size = 2;
+
+	size_t batch_size = 64;
+
+	size_t queue_size = 16;
 	
 	bool verbose = false;
 	
@@ -161,16 +165,27 @@ int main(int argc, char *argv[]) {
 	arg_desc.add("translated-tokens", 1);
 	arg_desc.add("english-tokens", 1);
 	
-	po::options_description opt_desc("Additional options");
-	opt_desc.add_options()
+	po::options_description generic_desc("Additional options");
+	generic_desc.add_options()
 		("help", "produce help message")
 		("df-sample-rate", po::value<size_t>(&df_sample_rate), "set sample rate to every n-th document (default: 1)")
 	    ("ngram_size,n", po::value<size_t>(&ngram_size), "ngram size (default: 2)")
-		("jobs,j", po::value<unsigned int>(&n_threads), "set number of threads (default: all)")
 		("threshold", po::value<float>(&threshold), "set score threshold (default: 0.1)")
-		("translated-tokens", po::value<string>(), "set input filename")
-		("english-tokens", po::value<string>(), "set input filename")
 		("verbose,v", po::value<bool>(&verbose), "show additional output (default: nope)");
+
+	po::options_description perf_desc("Performance options");
+	perf_desc.add_options()
+		("jobs,j", po::value<unsigned int>(&n_threads), "set number of threads (default: all cpus)")
+		("batch-size", po::value<size_t>(&batch_size), "number of documents per batch (default 64)")
+		("queue-size", po::value<size_t>(&queue_size), "number of batches that can be queued per worker (default: 16)");
+
+	po::options_description hidden_desc("Hidden options");
+	hidden_desc.add_options()
+		("translated-tokens", po::value<string>(), "set input filename")
+		("english-tokens", po::value<string>(), "set input filename");
+
+	po::options_description opt_desc;
+	opt_desc.add(generic_desc).add(perf_desc).add(hidden_desc);
 	
 	po::variables_map vm;
 	
@@ -185,7 +200,7 @@ int main(int argc, char *argv[]) {
 	if (vm.count("help") || !vm.count("translated-tokens") || !vm.count("english-tokens")) {
 		cout << "Usage: " << argv[0]
 		     << " TRANSLATED-TOKENS ENGLISH-TOKENS\n\n"
-		     << opt_desc << endl;
+		     << generic_desc << '\n' << perf_desc << endl;
 		return 1;
 	}
 	
@@ -224,5 +239,5 @@ int main(int argc, char *argv[]) {
 
 	// Start reading the other set of documents we match against
 	util::FilePiece en_tokens(vm["english-tokens"].as<std::string>().c_str());
-	return score_documents(refs, df, document_cnt, ngram_size, en_tokens, threshold, n_threads, 64, verbose);
+	return score_documents(refs, df, document_cnt, ngram_size, en_tokens, threshold, n_threads, queue_size, batch_size, verbose);
 }
