@@ -1,7 +1,7 @@
+#include <algorithm>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
-#include <map>
 #include <unordered_map>
 #include <thread>
 #include <memory>
@@ -71,11 +71,14 @@ size_t read_document_refs(util::FilePiece &fin_tokens, unordered_map<uint64_t,si
 
 int score_documents(vector<DocumentRef> const &refs, unordered_map<uint64_t, size_t> const &df, size_t document_cnt, size_t ngram_size, util::FilePiece &in_tokens, float threshold, unsigned int n_threads, size_t queue_size = 16, size_t batch_size = 16, bool verbose = false)
 {
+	unsigned int n_line_threads = max(n_threads / 4U, 1U);
+	unsigned int n_align_threads = max(n_threads - n_line_threads, 1U);
+
 	vector<thread> line_consumers;
-	line_consumers.reserve(n_threads / 2);
+	line_consumers.reserve(n_line_threads);
 
 	vector<thread> align_consumers;
-	align_consumers.reserve(n_threads / 2);
+	align_consumers.reserve(n_align_threads);
 
 	struct Line {
 		size_t n;
@@ -86,7 +89,7 @@ int score_documents(vector<DocumentRef> const &refs, unordered_map<uint64_t, siz
 	
 	blocking_queue<vector<unique_ptr<DocumentRef>>> align_queue(n_threads * queue_size);
 
-	for (unsigned int n = 0; n < n_threads / 2; ++n)
+	for (unsigned int n = 0; n < n_line_threads; ++n)
 		line_consumers.push_back(thread([&line_queue, &align_queue, &document_cnt, &df, &ngram_size]() {
 			while (true) {
 				vector<unique_ptr<Line>> in_batch(line_queue.pop());
@@ -111,7 +114,7 @@ int score_documents(vector<DocumentRef> const &refs, unordered_map<uint64_t, siz
 			}
 		}));
 	
-	for (unsigned int n = 0; n < n_threads / 2; ++n)
+	for (unsigned int n = 0; n < n_align_threads; ++n)
 		align_consumers.push_back(thread([&align_queue, &refs, &document_cnt, &df, &threshold]() {
 			while (true) {
 				vector<unique_ptr<DocumentRef>> batch(align_queue.pop());
@@ -161,16 +164,19 @@ int score_documents(vector<DocumentRef> const &refs, unordered_map<uint64_t, siz
 		line_queue.push(std::move(batch));
 
 	// Tell all workers there is nothing left and wait for them to stop.
-	for (size_t i = 0; i < n_threads / 2; ++i)
+	for (size_t i = 0; i < n_line_threads; ++i)
 		line_queue.push({});
 
 	// Wait for all line workers to finish.
 	for (auto &line_consumer : line_consumers)
 		line_consumer.join();
 
+	if (verbose)
+		cerr << "Line consumers are all done" << endl;
+
 	// Now we know that the line workers won't push any more content, we can
 	// send the stop signal to the align workers
-	for (size_t i = 0; i < n_threads / 2; ++i)
+	for (size_t i = 0; i < n_align_threads; ++i)
 		align_queue.push({});
 
 	for (auto &align_consumer : align_consumers)
