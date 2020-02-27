@@ -54,18 +54,38 @@ size_t read_df(util::FilePiece &fin, unordered_map<uint64_t, size_t> &df, size_t
 	return document_count;
 }
 
-size_t read_document_refs(util::FilePiece &fin_tokens, unordered_map<uint64_t,size_t> df, size_t document_cnt, size_t ngram_size, vector<DocumentRef>::iterator it) {
+size_t read_df_and_count_ngrams(util::FilePiece &fin, unordered_map<uint64_t, size_t> &df, size_t ngram_size, size_t skip_rate, size_t &ngram_cnt) {
+
+	// Number of documents actually read.
+	size_t document_count = 0;
+	for (StringPiece line : fin) {
+		Document document;
+		ReadDocument(line, document, ngram_size);
+
+		ngram_cnt += document.vocab.size();
+
+		if (document_count++ % skip_rate)
+			continue;
+
+		for (auto const &entry : document.vocab)
+			df[entry.first] += skip_rate;
+	}
+
+	return document_count;
+}
+
+size_t read_document_refs(util::FilePiece &fin_tokens, unordered_map<uint64_t,size_t> df, size_t document_cnt, size_t ngram_size, vector<DocumentRef>::iterator it, WordScore * &wordscore_pool) {
 	size_t n = 0;
-	
+
 	for (StringPiece line : fin_tokens) {
 		Document buffer{
 			.id = ++n,
 			.vocab = {}
 		};
 		ReadDocument(line, buffer, ngram_size);
-		calculate_tfidf(buffer, *it++, document_cnt, df);
+		calculate_tfidf(buffer, *it++, document_cnt, df, wordscore_pool);
 	}
-	
+
 	return n;
 }
 
@@ -185,11 +205,11 @@ int main(int argc, char *argv[]) {
 	// we want to keep in memory.
 	unordered_map<uint64_t,size_t> df;
 	
-	size_t in_document_cnt, en_document_cnt;
+	size_t in_document_cnt, en_document_cnt, in_ngram_cnt = 0;
 
 	{
 		util::FilePiece in_tokens(vm["translated-tokens"].as<std::string>().c_str());
-		in_document_cnt = read_df(in_tokens, df, ngram_size, df_sample_rate);
+		in_document_cnt = read_df_and_count_ngrams(in_tokens, df, ngram_size, df_sample_rate, in_ngram_cnt);
 	}
 
 	{
@@ -205,9 +225,14 @@ int main(int argc, char *argv[]) {
 	// Read translated documents & calculate TF/DF over the documents we have in memory
 	std::vector<DocumentRef> refs(in_document_cnt);
 
+	WordScore *wordvec_pool = new WordScore[in_ngram_cnt];
+
 	{
 		util::FilePiece in_tokens(vm["translated-tokens"].as<std::string>().c_str());
-		read_document_refs(in_tokens, df, document_cnt, ngram_size, refs.begin());
+
+		WordScore *wordvec_pool_it = wordvec_pool;
+		read_document_refs(in_tokens, df, document_cnt, ngram_size, refs.begin(), wordvec_pool_it);
+		assert(wordvec_pool_it == wordvec_pool + in_ngram_cnt);
 	}
 
 	if (verbose)
@@ -215,5 +240,10 @@ int main(int argc, char *argv[]) {
 
 	// Start reading the other set of documents we match against
 	util::FilePiece en_tokens(vm["english-tokens"].as<std::string>().c_str());
-	return score_documents(refs, df, document_cnt, ngram_size, en_tokens, threshold, n_threads, verbose);
+
+	int retval = score_documents(refs, df, document_cnt, ngram_size, en_tokens, threshold, n_threads, verbose);
+
+	delete[] wordvec_pool;
+
+	return retval;
 }

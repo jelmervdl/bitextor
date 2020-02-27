@@ -1,8 +1,11 @@
 #pragma once
 #include "util/string_piece.hh"
+#include "util/exception.hh"
+#include "array_view.h"
 #include <istream>
 #include <unordered_map>
 #include <vector>
+#include <sstream>
 
 namespace bitextor {
 
@@ -24,7 +27,7 @@ struct DocumentRef {
 	size_t id;
 	
 	// ngram scores as a sorted array for quick sparse dot product
-	std::vector<WordScore> wordvec;
+	ArrayView<WordScore> wordvec;
 };
 
 // Assumes base64 encoded still.
@@ -33,6 +36,8 @@ void ReadDocument(const StringPiece &encoded, Document &to, size_t ngram_size);
 std::ostream &operator<<(std::ostream &stream, Document const &document);
 
 std::ostream &operator<<(std::ostream &stream, DocumentRef const &ref);
+
+void calculate_tfidf(Document const &document, DocumentRef &document_ref, size_t document_count, std::unordered_map<uint64_t, size_t> const &df, WordScore* &wordscore_pool);
 
 void calculate_tfidf(Document const &document, DocumentRef &document_ref, size_t document_count, std::unordered_map<uint64_t, size_t> const &df);
 
