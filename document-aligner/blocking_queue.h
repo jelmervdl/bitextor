@@ -15,11 +15,15 @@ template <typename T> class blocking_queue
 {
 public:
 	explicit blocking_queue(size_t capacity);
+	blocking_queue(blocking_queue<T> &&other);
 	
 	void push(T const &item);
 	void push(T &&item);
 	T pop(); // TODO: explicit move semantics?
 	queue_performance const &performance() const { return _performance; }
+
+	blocking_queue<T> &operator=(blocking_queue<T> const &) = delete;
+	blocking_queue<T> &operator=(blocking_queue<T> &&);
 private:
 	size_t _size;
 	std::queue<T> _buffer;
@@ -34,6 +38,23 @@ template <typename T> blocking_queue<T>::blocking_queue(size_t size)
 	_size(size),
 	_performance{0,0} {
 	//
+}
+
+template <typename T> blocking_queue<T>::blocking_queue(blocking_queue<T> &&other)
+:
+	_size(other._size),
+	_buffer(std::move(other._buffer)),
+	_performance(std::move(other._performance))
+{
+	// TODO: creepy, we're not locking other
+}
+
+template<typename T> blocking_queue<T> &blocking_queue<T>::operator=(blocking_queue<T> &&other) {
+	// TODO: we should be locking both this & other really...
+	_size = other._size;
+	_buffer = std::move(other._buffer);
+	_performance = std::move(other._performance);
+	return *this;
 }
 
 template <typename T> void blocking_queue<T>::push(T &&item) {
