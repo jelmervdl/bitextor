@@ -71,85 +71,104 @@ size_t read_document_refs(util::FilePiece &fin_tokens, unordered_map<uint64_t,si
 
 int score_documents(vector<DocumentRef> const &refs, unordered_map<uint64_t, size_t> const &df, size_t document_cnt, size_t ngram_size, util::FilePiece &in_tokens, float threshold, unsigned int n_threads, size_t queue_size = 16, size_t batch_size = 16, bool verbose = false)
 {
+	// A queue for each worker
+	vector<blocking_queue<shared_ptr<vector<DocumentRef>>>> queues;
+	queues.reserve(n_threads);
+
 	vector<thread> consumers;
 	consumers.reserve(n_threads);
-	
-	blocking_queue<vector<unique_ptr<Document>>> queue(n_threads * queue_size);
-	
-	for (unsigned int n = 0; n < n_threads; ++n)
-		consumers.push_back(thread([&queue, &refs, document_cnt, &df, threshold]() {
-			while (true) {
-				vector<unique_ptr<Document>> batch(queue.pop());
 
-				if (batch.empty())
+	// Create n workers and n queues. Each worker only does 1/n-th of the
+	// comparisons with ref docs.
+	for (unsigned int n = 0; n < n_threads; ++n) {
+		queues.push_back(blocking_queue<shared_ptr<vector<DocumentRef>>>(queue_size));
+
+		consumers.push_back(thread([&queues, &refs, &document_cnt, &df, &threshold, &n_threads, n]() {
+			size_t refs_slice_size = (refs.size() + n_threads - 1) / n_threads;
+
+			auto const refs_slice_begin = refs.cbegin() + n * refs_slice_size;
+			auto const refs_slice_end = min(refs.cend(), refs_slice_begin + refs_slice_size); // this works? Wow.
+
+			while (true) {
+				shared_ptr<vector<DocumentRef>> batch(queues[n].pop());
+
+				// If it is an empty pointer, we know we're done.
+				if (!batch)
 					break;
 
-				for (unique_ptr<Document> const &buffer : batch) {
-					DocumentRef buffer_ref{
-						.id = buffer->id,
-						.wordvec = {}
-					};
-
-					calculate_tfidf(*buffer, buffer_ref, document_cnt, df);
-
-					for (auto const &document_ref : refs) {
-						float score = calculate_alignment(document_ref, buffer_ref);
+				for (DocumentRef const &buffer_ref : *batch) {
+					for (auto  ref_it = refs_slice_begin; ref_it != refs_slice_end; ++ref_it) {
+						float score = calculate_alignment(*ref_it, buffer_ref);
 
 						// Document not a match? Skip to the next.
 						if (score < threshold)
 							continue;
 
-						print_score(score, document_ref, buffer_ref);
+						print_score(score, *ref_it, buffer_ref);
 					}
 				}
 			}
 		}));
+	}
 	
-	auto stop = [&consumers, &queue, n_threads]() {
-		// Send poison to all workers
-		for (size_t n = 0; n < n_threads; ++n)
-			queue.push({});
-		
-		// Wait for the workers to finish
-		for (auto &consumer : consumers)
-			consumer.join();
-	};
+	{
+		shared_ptr<vector<DocumentRef>> batch;
 
-	vector<unique_ptr<Document>> batch;
-	batch.reserve(batch_size);
-	
-	for (size_t n = 1; true; ++n) {
-		unique_ptr<Document> buffer(new Document());
+		for (size_t n = 1; true; ++n) {
+			if (!batch) {
+				batch.reset(new vector<DocumentRef>());
+				batch->reserve(batch_size);
+			}
 
-		StringPiece line;
-		if (!in_tokens.ReadLineOrEOF(line))
-			break;
-		ReadDocument(line, *buffer, ngram_size);
+			Document document{
+				.id = n,
+				.vocab = {}
+			};
 
-		buffer->id = n;
+			DocumentRef document_ref{
+				.id = n,
+				.wordvec = {}
+			};
 
-		// Push this document to the batch
-		batch.push_back(std::move(buffer));
+			StringPiece line;
+			if (!in_tokens.ReadLineOrEOF(line))
+				break;
 
-		// If the batch is full, push it to the queue
-		if (batch.size() == batch_size) {
-			queue.push(std::move(batch));
-			batch.clear();
+			ReadDocument(line, document, ngram_size);
+			calculate_tfidf(document, document_ref, document_cnt, df);
+
+			// Push this document to the batch
+			batch->push_back(std::move(document_ref));
+
+			// If the batch is full, push it to the queue
+			if (batch->size() == batch_size) {
+				for (auto &queue : queues)
+					queue.push(batch);
+
+				batch.reset();
+			}
 		}
+
+		// Push any trailing batch on the queue
+		if (batch)
+			for (auto &queue : queues)
+				queue.push(batch);
 	}
 
-	// Push any trailing files
-	if (!batch.empty())
-		queue.push(std::move(batch));
-
 	// Tell all workers there is nothing left and wait for them to stop.
-	stop();
-	
+	for (auto &queue : queues)
+		queue.push(nullptr);
+
+	// Wait for the workers to finish
+	for (auto &consumer : consumers)
+		consumer.join();
+
 	if (verbose)
-		cerr << "Queue performance:\n"
-		     << "  underflow: " << queue.performance().underflow << '\n'
-		     << "  overflow: " << queue.performance().overflow << endl;
-	
+		for (size_t n = 0; n < queues.size(); ++n)
+			cerr << "Queue " << n << " performance:\n"
+			     << "  underflow: " << queues[n].performance().underflow << '\n'
+			     << "   overflow: " << queues[n].performance().overflow << '\n';
+
 	return 0;
 }
 
