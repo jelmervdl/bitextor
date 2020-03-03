@@ -39,7 +39,7 @@ template <typename T> vector<thread> start(unsigned int n_threads, T fun) {
  * Utility to stop & join threads. Needs access to the queue to supply it null pointers after which it waits
  * for the workers to stop & join.
  */
-template <typename T> void stop(blocking_queue<unique_ptr<T>> &queue, vector<thread> &workers) {
+template <typename T> void stop(blocking_queue<T> &queue, vector<thread> &workers) {
 	for (size_t i = 0; i < workers.size(); ++i)
 		queue.push(nullptr);
 
@@ -83,47 +83,8 @@ size_t queue_lines(std::string const &path, blocking_queue<unique_ptr<Line>> &qu
 	return queue_lines(fin, queue, skip_rate);
 }
 
-template <typename T> class growing_array {
-public:
-	void set(size_t index, T const &value) {
-		// Everybody can read at the same time, but we must not read while
-		shared_lock<shared_mutex> lock(mutex_);
-
-		if (index >= buffer_.size()) {
-			lock.unlock(); // unlock shared because reserve needs exclusive access
-			reserve(index + 1);
-			lock.lock();
-		}
-
-		buffer_[index] = value;
-	}
-
-	vector<T> const &data() const {
-		return buffer_;
-	}
-private:
-	vector<T> buffer_;
-	shared_mutex mutex_;
-
-	void reserve(size_t minimum) {
-		unique_lock<shared_mutex> lock(mutex_);
-
-		size_t p = 1, n = minimum;
-		if (n && !(n & (n - 1)))
-			minimum = n;
-		else {
-			while (p < n)
-				p <<= 1;
-
-			minimum = p;
-		}
-
-		if (buffer_.size() < minimum)
-			buffer_.resize(minimum);
-	}
-};
-
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[])
+{
 	unsigned int n_threads = max(1u, thread::hardware_concurrency() - 1);
 	
 	float threshold = 0.1;
@@ -183,8 +144,6 @@ int main(int argc, char *argv[]) {
 
 	unsigned int n_score_threads = min(n_threads, max(n_threads - n_read_threads, 1u));
 
-	growing_array<size_t> vocab_sizes;
-	
 	// Calculate the document frequency for terms. Starts a couple of threads
 	// that parse documents and keep a local hash table for counting. At the
 	// end these tables are merged into df.
@@ -193,32 +152,13 @@ int main(int argc, char *argv[]) {
 
 	{
 		mutex df_mutex;
-		blocking_queue<unique_ptr<Line>> in_queue(n_sample_threads * 128);
-		blocking_queue<unique_ptr<Line>> en_queue(n_sample_threads * 128);
+		blocking_queue<unique_ptr<Line>> queue(n_sample_threads * 128);
 
-		vector<thread> workers(start(n_sample_threads, [&in_queue, &en_queue, &vocab_sizes, &df, &df_mutex, &ngram_size, &df_sample_rate]() {
+		vector<thread> workers(start(n_sample_threads, [&queue, &df, &df_mutex, &ngram_size, &df_sample_rate]() {
 			unordered_map<uint64_t, size_t> local_df;
 
 			while (true) {
-				unique_ptr<Line> line(in_queue.pop());
-
-				if (!line)
-					break;
-
-				Document document;
-				ReadDocument(line->str, document, ngram_size);
-
-				vocab_sizes.set(line->n - 1, document.vocab.size());
-
-				if (line->n % df_sample_rate)
-					continue;
-
-				for (auto const &entry : document.vocab)
-					local_df[entry.first] += 1; // Count once every document
-			}
-
-			while (true) {
-				unique_ptr<Line> line(en_queue.pop());
+				unique_ptr<Line> line(queue.pop());
 
 				if (!line)
 					break;
@@ -242,26 +182,16 @@ int main(int argc, char *argv[]) {
 		// we want to keep in memory. (Also this line is the whole reason the
 		// worker management + reading isn't wrapped in a single function: I
 		// want to re-use the same workers for two files.)
-		in_document_cnt = queue_lines(vm["translated-tokens"].as<std::string>(), in_queue, 1);
-
-		for (unsigned int i = 0; i < n_sample_threads; ++i)
-			in_queue.push(nullptr);
-
-		en_document_cnt = queue_lines(vm["english-tokens"].as<std::string>(), en_queue, df_sample_rate);
+		in_document_cnt = queue_lines(vm["translated-tokens"].as<std::string>(), queue, df_sample_rate);
+		en_document_cnt = queue_lines(vm["english-tokens"].as<std::string>(), queue, df_sample_rate);
 
 		document_cnt = in_document_cnt + en_document_cnt;
 
-		stop(en_queue, workers);
+		stop(queue, workers);
 
 		if (verbose)
 			cerr << "Calculated DF from " << document_cnt / df_sample_rate << " documents" << endl;
 	}
-
-	size_t in_ngram_cnt = 0;
-	for (size_t const &entry : vocab_sizes.data())
-		in_ngram_cnt += entry;
-
-	WordScore *wordvec_pool = new WordScore[in_ngram_cnt];
 
 	// Prune the DF table, similar to what the Python implementation does. Note
 	// that these counts are linked to sample-rate already, so if you have a
@@ -285,18 +215,55 @@ int main(int argc, char *argv[]) {
 		swap(df, pruned_df);
 	}
 
-	// Read translated documents & pre-calculate TF/DF for each of these documents
-	std::vector<DocumentRef> refs(in_document_cnt);
-
-	WordScore *wordvec_it = wordvec_pool;
-	for (size_t i = 0; i < in_document_cnt; ++i) {
-		refs[i].wordvec = ArrayView<WordScore>(wordvec_it, wordvec_it + vocab_sizes.data()[i]);
-		wordvec_it += vocab_sizes.data()[i];
-	}
-	assert(wordvec_it == wordvec_pool + in_ngram_cnt);
+	// Keep count of how many ngrams that are in DF are in each document so we
+	// can allocate exactly the right amount of memory when createing our
+	// wordscore vectors later on.
+	std::vector<size_t> document_wordvec_sizes(in_document_cnt);
 
 	{
 		blocking_queue<unique_ptr<Line>> queue(n_load_threads * 128);
+		vector<thread> workers(start(n_load_threads, [&queue, &df, &ngram_size, &document_wordvec_sizes]() {
+			while (true) {
+				unique_ptr<Line> line(queue.pop());
+
+				if (!line)
+					break;
+
+				Document document{.id = line->n, .vocab = {}};
+				ReadDocument(line->str, document, ngram_size);
+
+				for (auto const &entry : document.vocab)
+					if (df.find(entry.first) != df.end())
+						document_wordvec_sizes[line->n - 1] += 1;
+			}
+		}));
+
+		queue_lines(vm["translated-tokens"].as<std::string>(), queue);
+
+		stop(queue, workers);
+	}
+
+	// Allocate the document representations and give them access to a large
+	// but precisely fitting wordvec so all wordvec memory is layed out neatly.
+	std::vector<DocumentRef> refs(in_document_cnt);
+
+	size_t in_ngram_cnt = 0;
+	for (size_t const &entry : document_wordvec_sizes)
+		in_ngram_cnt += entry;
+
+	WordScore *wordvec_pool = new WordScore[in_ngram_cnt];
+
+	WordScore *wordvec_it = wordvec_pool;
+	for (size_t i = 0; i < in_document_cnt; ++i) {
+		refs[i].wordvec = ArrayView<WordScore>(wordvec_it, wordvec_it + document_wordvec_sizes[i]);
+		wordvec_it += document_wordvec_sizes[i];
+	}
+
+	// Assert we divided up all the memory we allocated.
+	assert(wordvec_it == wordvec_pool + in_ngram_cnt);
+
+	{
+		blocking_queue<unique_ptr<Line>> queue(n_load_threads * 128); // we could even make it a queue of indices at this point...
 		vector<thread> workers(start(n_load_threads, [&queue, &refs, &df, &document_cnt, &ngram_size]() {
 			while (true) {
 				unique_ptr<Line> line(queue.pop());
@@ -304,17 +271,16 @@ int main(int argc, char *argv[]) {
 				if (!line)
 					break;
 
-				Document doc{.id = line->n, .vocab = {}};
-				ReadDocument(line->str, doc, ngram_size);
+				Document document{.id = line->n, .vocab = {}};
+				ReadDocument(line->str, document, ngram_size);
 
-				// Note that each worker writes to a different line in the refs
-				// vector and the vector has been initialized with enough lines
-				// so there should be no concurrency issue.
-				// DF is accessed read-only. N starts counting at 1.
-				calculate_tfidf(doc, refs[line->n - 1], document_cnt, df);
+				calculate_tfidf(document, refs[document.id - 1], document_cnt, df);
 			}
 		}));
 
+		// I know we're reading the file for a third time but it seemed to be about
+		// as quick and sometimes quicker to do so than it was to read all documents
+		// into memory. Less dynamic allocations I suppose.
 		queue_lines(vm["translated-tokens"].as<std::string>(), queue);
 
 		stop(queue, workers);

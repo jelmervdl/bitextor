@@ -57,13 +57,13 @@ inline float tfidf(size_t tf, size_t dc, size_t df) {
 void calculate_tfidf(Document const &document, DocumentRef &document_ref, size_t document_count, unordered_map<uint64_t, size_t> const &df) {
 	document_ref.id = document.id;
 
-	if (document_ref.wordvec.size() != document.vocab.size()) {
-		stringstream ss;
-		ss << "Allocated wordvec is not the same size (" << document_ref.wordvec.size() << ") as the document " << document.id << " vocab. (" << document.vocab.size() << ")";
-		throw length_error(ss.str());
-	}
-
 	float total_tfidf_l2 = 0;
+
+	// assert the document_ref wordvec is filled
+	assert(document_ref.wordvec.begin() != nullptr);
+
+	// assert it's not too large
+	assert(document.vocab.size() >= document_ref.wordvec.size());
 
 	ArrayView<WordScore>::iterator wordscore_it = document_ref.wordvec.begin();
 
@@ -72,6 +72,7 @@ void calculate_tfidf(Document const &document, DocumentRef &document_ref, size_t
 		auto it = df.find(entry.first);
 
 		// Match Python implementation behaviour
+		// Note: we've taken this into account while allocating wordvec.
 		if (it == df.end())
 			continue;
 	
@@ -90,6 +91,11 @@ void calculate_tfidf(Document const &document, DocumentRef &document_ref, size_t
 		};
 	}
 
+	// Assert we allocated enough memory. We do not know exactly how much we
+	// needed as when reading English docs we did not want to do the DF lookup
+	// just to do the right allocation.
+	assert(wordscore_it <= document_ref.wordvec.end());
+
 	// Sort wordvec, which is assumed by calculate_alignment
 	sort(document_ref.wordvec.begin(),
 		 document_ref.wordvec.end(),
@@ -98,7 +104,6 @@ void calculate_tfidf(Document const &document, DocumentRef &document_ref, size_t
 	});
 	
 	// Normalize
-	
 	total_tfidf_l2 = sqrt(total_tfidf_l2);
 	for (auto &entry : document_ref.wordvec)
 		entry.tfidf /= total_tfidf_l2;
