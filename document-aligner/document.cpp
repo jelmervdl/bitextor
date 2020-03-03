@@ -4,6 +4,7 @@
 #include <sstream>
 #include <iostream>
 #include <cmath>
+#include <stdexcept>
 
 using namespace std;
 
@@ -53,11 +54,18 @@ inline float tfidf(size_t tf, size_t dc, size_t df) {
  * across all documents. Only terms that are seen in this document and in the document frequency table are
  * counted. All other terms are ignored.
 */
-void calculate_tfidf(Document const &document, DocumentRef &document_ref, size_t document_count, unordered_map<uint64_t, size_t> const &df, WordScore * &wordscore_pool) {
+void calculate_tfidf(Document const &document, DocumentRef &document_ref, size_t document_count, unordered_map<uint64_t, size_t> const &df) {
 	document_ref.id = document.id;
-	document_ref.wordvec = ArrayView<WordScore>(wordscore_pool, wordscore_pool + document.vocab.size());
+
+	if (document_ref.wordvec.size() != document.vocab.size()) {
+		stringstream ss;
+		ss << "Allocated wordvec is not the same size (" << document_ref.wordvec.size() << ") as the document " << document.id << " vocab. (" << document.vocab.size() << ")";
+		throw length_error(ss.str());
+	}
 
 	float total_tfidf_l2 = 0;
+
+	ArrayView<WordScore>::iterator wordscore_it = document_ref.wordvec.begin();
 
 	for (auto const &entry : document.vocab) {
 		// How often does the term occur in the whole dataset?
@@ -72,14 +80,12 @@ void calculate_tfidf(Document const &document, DocumentRef &document_ref, size_t
 		// Keep track of the squared sum of all values for L2 normalisation
 		total_tfidf_l2 += document_tfidf * document_tfidf;
 		
-		*wordscore_pool++ = WordScore{
+		*wordscore_it++ = WordScore{
 			.hash = entry.first,
 			.tfidf = document_tfidf
 		};
 	}
 
-	assert(document_ref.wordvec.end() == wordscore_pool);
-	
 	// Sort wordvec, which is assumed by calculate_alignment
 	sort(document_ref.wordvec.begin(),
 		 document_ref.wordvec.end(),
@@ -92,12 +98,6 @@ void calculate_tfidf(Document const &document, DocumentRef &document_ref, size_t
 	total_tfidf_l2 = sqrt(total_tfidf_l2);
 	for (auto &entry : document_ref.wordvec)
 		entry.tfidf /= total_tfidf_l2;
-}
-
-void calculate_tfidf(Document const &document, DocumentRef &document_ref, size_t document_count, unordered_map<uint64_t, size_t> const &df) {
-	WordScore *ptr = new WordScore[document.vocab.size()];
-	calculate_tfidf(document, document_ref, document_count, df, ptr);
-	document_ref.wordvec.take_ownership();
 }
 
 /**

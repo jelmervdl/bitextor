@@ -6,6 +6,7 @@
 #include <thread>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <vector>
 #include <cmath>
 #include <boost/program_options.hpp>
@@ -85,6 +86,46 @@ size_t queue_lines(std::string const &path, blocking_queue<unique_ptr<Line>> &qu
 	return queue_lines(fin, queue, skip_rate);
 }
 
+template <typename T> class growing_array {
+public:
+	void set(size_t index, T const &value) {
+		// Everybody can read at the same time, but we must not read while
+		shared_lock<shared_mutex> lock(mutex_);
+
+		if (index >= buffer_.size()) {
+			lock.unlock(); // unlock shared because reserve needs exclusive access
+			reserve(index + 1);
+			lock.lock();
+		}
+
+		buffer_[index] = value;
+	}
+
+	vector<T> const &data() const {
+		return buffer_;
+	}
+private:
+	vector<T> buffer_;
+	shared_mutex mutex_;
+
+	void reserve(size_t minimum) {
+		unique_lock<shared_mutex> lock(mutex_);
+
+		size_t p = 1, n = minimum;
+		if (n && !(n & (n - 1)))
+			minimum = n;
+		else {
+			while (p < n)
+				p <<= 1;
+
+			minimum = p;
+		}
+
+		if (buffer_.size() < minimum)
+			buffer_.resize(minimum);
+	}
+};
+
 int main(int argc, char *argv[]) {
 	unsigned int n_threads = max(1u, thread::hardware_concurrency() - 1);
 	
@@ -135,6 +176,8 @@ int main(int argc, char *argv[]) {
 	unsigned int n_read_threads = min(n_threads, min(max(n_threads / 4u, 1u), 4u)); // really no use to have more than 4 threads decode
 
 	unsigned int n_score_threads = min(n_threads, max(n_threads - n_read_threads, 1u));
+
+	growing_array<size_t> vocab_sizes;
 	
 	// Calculate the document frequency for terms. Starts a couple of threads
 	// that parse documents and keep a local hash table for counting. At the
@@ -144,12 +187,32 @@ int main(int argc, char *argv[]) {
 
 	{
 		mutex df_mutex;
-		blocking_queue<unique_ptr<Line>> queue(n_sample_threads * 128);
-		vector<thread> workers(start(4, [&queue, &df, &df_mutex, &ngram_size, &df_sample_rate]() {
+		blocking_queue<unique_ptr<Line>> in_queue(n_sample_threads * 128);
+		blocking_queue<unique_ptr<Line>> en_queue(n_sample_threads * 128);
+
+		vector<thread> workers(start(n_sample_threads, [&in_queue, &en_queue, &vocab_sizes, &df, &df_mutex, &ngram_size, &df_sample_rate]() {
 			unordered_map<uint64_t, size_t> local_df;
 
 			while (true) {
-				unique_ptr<Line> line(queue.pop());
+				unique_ptr<Line> line(in_queue.pop());
+
+				if (!line)
+					break;
+
+				Document document;
+				ReadDocument(line->str, document, ngram_size);
+
+				vocab_sizes.set(line->n - 1, document.vocab.size());
+
+				if (line->n % df_sample_rate)
+					continue;
+
+				for (auto const &entry : document.vocab)
+					local_df[entry.first] += 1; // Count once every document
+			}
+
+			while (true) {
+				unique_ptr<Line> line(en_queue.pop());
 
 				if (!line)
 					break;
@@ -173,23 +236,36 @@ int main(int argc, char *argv[]) {
 		// we want to keep in memory. (Also this line is the whole reason the
 		// worker management + reading isn't wrapped in a single function: I
 		// want to re-use the same workers for two files.)
-		in_document_cnt = queue_lines(vm["translated-tokens"].as<std::string>(), queue, df_sample_rate);
-		en_document_cnt = queue_lines(vm["english-tokens"].as<std::string>(), queue, df_sample_rate);
+		in_document_cnt = queue_lines(vm["translated-tokens"].as<std::string>(), in_queue, 1);
+
+		for (unsigned int i = 0; i < n_sample_threads; ++i)
+			in_queue.push(nullptr);
+
+		en_document_cnt = queue_lines(vm["english-tokens"].as<std::string>(), en_queue, df_sample_rate);
+
 		document_cnt = in_document_cnt + en_document_cnt;
 
-		stop(queue, workers);
+		stop(en_queue, workers);
 
 		if (verbose)
 			cerr << "Calculated DF from " << document_cnt / df_sample_rate << " documents" << endl;
-
-		if (verbose)
-			cerr << "DF queue performance:\n" << queue.performance();
 	}
+
+	size_t in_ngram_cnt = 0;
+	for (size_t const &entry : vocab_sizes.data())
+		in_ngram_cnt += entry;
+
+	WordScore *wordvec_pool = new WordScore[in_ngram_cnt];
 
 	// Read translated documents & pre-calculate TF/DF for each of these documents
 	std::vector<DocumentRef> refs(in_document_cnt);
 
-	WordScore *wordvec_pool = new WordScore[in_ngram_cnt];
+	WordScore *wordvec_it = wordvec_pool;
+	for (size_t i = 0; i < in_document_cnt; ++i) {
+		refs[i].wordvec = ArrayView<WordScore>(wordvec_it, wordvec_it + vocab_sizes.data()[i]);
+		wordvec_it += vocab_sizes.data()[i];
+	}
+	assert(wordvec_it == wordvec_pool + in_ngram_cnt);
 
 	{
 		blocking_queue<unique_ptr<Line>> queue(n_load_threads * 128);
@@ -240,6 +316,7 @@ int main(int argc, char *argv[]) {
 				ReadDocument(line->str, doc, ngram_size);
 
 				unique_ptr<DocumentRef> ref(new DocumentRef);
+				ref->wordvec = ArrayView<WordScore>::allocate(doc.vocab.size());
 				calculate_tfidf(doc, *ref, document_cnt, df);
 
 				score_queue.push(move(ref));
@@ -275,6 +352,8 @@ int main(int argc, char *argv[]) {
 			cerr << "Read queue performance (Note: blocks when score queue fills up):\n" << read_queue.performance()
 			     << "Score queue performance:\n" << score_queue.performance();
 	}
+
+	delete[] wordvec_pool;
 
 	return 0;
 }

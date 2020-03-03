@@ -16,7 +16,7 @@ public:
 		//
 	}
 
-	ArrayView(T *begin, T *end) : begin_(begin), end_(end) {
+	ArrayView(T *begin, T *end) : begin_(begin), end_(end), is_owner_(false) {
 		//
 	}
 
@@ -85,8 +85,11 @@ public:
 		return cend() - cbegin();
 	}
 
-	inline void take_ownership() {
-		is_owner_ = true;
+	static ArrayView<T> allocate(size_t size) {
+		T *data = new T[size];
+		ArrayView<T> view(data, data + size);
+		view.is_owner_ = true;
+		return view;
 	}
 
 private:
