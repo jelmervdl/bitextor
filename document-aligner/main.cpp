@@ -189,6 +189,8 @@ int main(int argc, char *argv[]) {
 	// Read translated documents & pre-calculate TF/DF for each of these documents
 	std::vector<DocumentRef> refs(in_document_cnt);
 
+	WordScore *wordvec_pool = new WordScore[in_ngram_cnt];
+
 	{
 		blocking_queue<unique_ptr<Line>> queue(n_load_threads * 128);
 		vector<thread> workers(start(n_load_threads, [&queue, &refs, &df, &document_cnt, &ngram_size]() {
