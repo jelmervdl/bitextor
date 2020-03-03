@@ -52,15 +52,12 @@ ostream &operator<<(ostream &out, queue_performance const &performance) {
 	           << "   overflow: " << performance.overflow << '\n';
 }
 
-mutex print_lock;
-
-void print_score(float score, DocumentRef const &left, DocumentRef const &right)
+void print_score(float score, size_t left_id, size_t right_id)
 {
-	unique_lock<mutex> lock(print_lock);
 	cout << fixed << setprecision(5)
 	     << score
-	     << '\t' << left.id
-	     << '\t' << right.id
+	     << '\t' << left_id
+	     << '\t' << right_id
 	     << '\n';
 }
 
@@ -135,7 +132,13 @@ int main(int argc, char *argv[]) {
 	
 	size_t ngram_size = 2;
 
+	size_t min_ngram_cnt = 2;
+
+	size_t max_ngram_cnt = 1000;
+
 	bool verbose = false;
+
+	bool best_only = true;
 	
 	po::positional_options_description arg_desc;
 	arg_desc.add("translated-tokens", 1);
@@ -148,6 +151,9 @@ int main(int argc, char *argv[]) {
 		("ngram_size,n", po::value<size_t>(&ngram_size), "ngram size (default: 2)")
 		("jobs,j", po::value<unsigned int>(&n_threads), "set number of threads (default: all)")
 		("threshold", po::value<float>(&threshold), "set score threshold (default: 0.1)")
+		("min_count", po::value<size_t>(&min_ngram_cnt), "minimal number of documents an ngram can appear in to be included in DF (default: 2)")
+		("max_count", po::value<size_t>(&max_ngram_cnt), "maximum number of documents for ngram to to appear in (default: 1000)")
+		("best", po::value<bool>(&best_only), "only output the best match for each document (default: on)")
 		("translated-tokens", po::value<string>(), "set input filename")
 		("english-tokens", po::value<string>(), "set input filename")
 		("verbose,v", po::value<bool>(&verbose), "show additional output (default: nope)");
@@ -257,6 +263,28 @@ int main(int argc, char *argv[]) {
 
 	WordScore *wordvec_pool = new WordScore[in_ngram_cnt];
 
+	// Prune the DF table, similar to what the Python implementation does. Note
+	// that these counts are linked to sample-rate already, so if you have a
+	// sample rate of higher than 1, your min_ngram_count should also be a
+	// multiple of sample rate + 1.
+	{
+		unordered_map<uint64_t, size_t> pruned_df;
+		for (auto const &entry : df) {
+			if (entry.second < min_ngram_cnt)
+				continue;
+
+			if (entry.second > max_ngram_cnt)
+				continue;
+
+			pruned_df[entry.first] = entry.second;
+		}
+
+		if (verbose)
+			cerr << "Pruned " << df.size() - pruned_df.size() << " (" << 100.0 - 100.0 * pruned_df.size() / df.size() << "%) entries from DF" << endl;
+
+		swap(df, pruned_df);
+	}
+
 	// Read translated documents & pre-calculate TF/DF for each of these documents
 	std::vector<DocumentRef> refs(in_document_cnt);
 
@@ -323,7 +351,46 @@ int main(int argc, char *argv[]) {
 			}
 		}));
 
-		vector<thread> score_workers(start(n_score_threads, [&score_queue, &refs, &threshold]() {
+		// Function used to report the score. Implementation depends on whether
+		// we are doing best_only or not. Mutex is necessary for both cases,
+		// either for writing to top_scores or for printing to stdout.
+		function<void (float, DocumentRef const &, DocumentRef const &)> mark_score;
+		mutex mark_score_mutex;
+
+		// Top scores vector is only filled in best_only case. Otherwise we just
+		// write directly to stdout.
+		vector<pair<float,size_t>> top_scores;
+
+		if (best_only) {
+			top_scores.resize(in_document_cnt);
+			mark_score = [&top_scores, &mark_score_mutex] (float score, DocumentRef const &in_ref, DocumentRef const &en_ref) {
+				// Is there already a better scoring document? That one wins.
+				if (score <= top_scores[in_ref.id - 1].first)
+					return;
+
+				// Is there an equally well scoring document, but does if have a lower id? That one still wins.
+				if (score == top_scores[in_ref.id - 1].first && top_scores[in_ref.id - 1].second < en_ref.id)
+					return;
+
+				unique_lock<mutex> lock(mark_score_mutex);
+				// Lock acquired, but check again, things might have changed in the mean time.
+
+				// If we're better, overwrite in every case.
+				if (score > top_scores[in_ref.id - 1].first)
+					top_scores[in_ref.id - 1] = pair<float, size_t>(score, en_ref.id);
+
+				// If we're equally good, only overwrite if we have a lower document id
+				else if (score == top_scores[in_ref.id - 1].first && en_ref.id < top_scores[in_ref.id - 1].second)
+					top_scores[in_ref.id - 1].second = en_ref.id;
+			};
+		} else {
+			mark_score = [&mark_score_mutex](float score, DocumentRef const &in_ref, DocumentRef const &en_ref) {
+				unique_lock<mutex> lock(mark_score_mutex);
+				print_score(score, in_ref.id, en_ref.id);
+			};
+		}
+
+		vector<thread> score_workers(start(n_score_threads, [&score_queue, &refs, &threshold, &mark_score]() {
 			while (true) {
 				unique_ptr<DocumentRef> doc_ref(score_queue.pop());
 
@@ -337,7 +404,7 @@ int main(int argc, char *argv[]) {
 					if (score < threshold)
 						continue;
 
-					print_score(score, ref, *doc_ref);
+					mark_score(score, ref, *doc_ref);
 				}
 			}
 		}));
@@ -347,6 +414,12 @@ int main(int argc, char *argv[]) {
 		// Tell all workers there is nothing left and wait for them to stop.
 		stop(read_queue, read_workers);
 		stop(score_queue, score_workers);
+
+		if (best_only) {
+			for (size_t i = 0; i < top_scores.size(); ++i)
+				if (top_scores[i].first >= threshold) // top-scores has entries for all
+					print_score(top_scores[i].first, i + 1, top_scores[i].second);
+		}
 
 		if (verbose)
 			cerr << "Read queue performance (Note: blocks when score queue fills up):\n" << read_queue.performance()

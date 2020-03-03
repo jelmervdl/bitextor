@@ -46,7 +46,7 @@ ostream &operator<<(ostream &stream, DocumentRef const &document)
 	
 inline float tfidf(size_t tf, size_t dc, size_t df) {
 	// Note: Matches tf_smooth setting 14 (2 for TF and 2 for IDF) of the python implementation
-	return (float) log(tf + 1) * log(dc / (1.0f + df));
+	return logf(tf + 1) * logf(dc / (1.0f + df));
 }
 	
 /**
@@ -70,6 +70,10 @@ void calculate_tfidf(Document const &document, DocumentRef &document_ref, size_t
 	for (auto const &entry : document.vocab) {
 		// How often does the term occur in the whole dataset?
 		auto it = df.find(entry.first);
+
+		// Match Python implementation behaviour
+		if (it == df.end())
+			continue;
 	
 		// If we can't find it (e.g. because we didn't really read the whole
 		// dataset) we just assume one: just this document.
