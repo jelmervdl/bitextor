@@ -50,3 +50,5 @@ target_link_libraries(docalign ${Boost_LIBRARIES} preprocess_util)
 # Similar to coreutils join, but using line indices and works on gzipped files
 add_executable(docjoin docjoin.cpp ${dalign_cpp_headers} ${dalign_cpp_cpp})
 target_link_libraries(docjoin preprocess_util)
+add_executable(b64filter b64filter.cpp ${dalign_cpp_headers} ${dalign_cpp_cpp})
+target_link_libraries(b64filter preprocess_util)
