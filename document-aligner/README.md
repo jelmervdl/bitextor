@@ -45,14 +45,58 @@ usage for the document frequency part of TFIDF. 1 indicates that every document
 will be read while 4 would mean that one of every four documents will be added
 to the DF.
 
-# Input
+## Input
 Two files (gzip-compressed or plain text) with on each line a single base64-
 encoded list of tokens (separated by whitespace).
 
-# Output
+## Output
 For each alignment score that is greater or equal to the threshold it prints the
 score, and the indexes (starting with 1) of the documents in TRANSLATED-TOKENS
 and ENGLISH-TOKENS, separated by tabs to STDOUT.
+
+# docjoin
+```
+Usage: bin/docjoin [ -l filename | -r filename | -li | -ri ] ...
+Input via stdin: <float> "\t" <left index> "\t" <right index> "\n"
+
+This program joins rows from two sets of files into tab-separated output.
+
+Column options:
+  -l    Use left index for the following files
+  -r    Use right index for the following files
+  -li   Print the left index
+  -ri   Print the right index
+
+The order of the columns in the output is the same as the order of the
+arguments given to the program.
+```
+
+# docenc
+```
+Usage: docenc [ -d ] [ -0 ] [ index ... ]
+```
+
+Better served by an example:
+```
+docenc -d < plain_text.gz \
+	| tr '[:lower:]' '[:upper:]' \
+	| bin/docenc \
+	| gzip -c \
+	> loud_text.gz
+```
+
+# b64filter
+```
+Usage: b64filter command
+```
+
+Again, an example shows much more:
+```
+gzip -cd plain_text.gz \
+	| b64filter tr '[:lower:]' '[:upper:]' \
+	| gzip -c \
+	> very_loud_text.gz
+```
 
 # Building on CSD3
 ```
@@ -78,5 +122,5 @@ cmake -D Boost_DIR=$HOME/.local/lib/cmake/Boost-1.72.0 ..
 make -j4
 ```
 
-Now you should have a `bin/dalign` in your build directory. Note that it is
+Now you should have a `bin/docalign` and others in your build directory. Note that it is
 linked to your custom Boost which makes it a bit less portable.
