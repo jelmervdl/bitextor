@@ -1,14 +1,43 @@
-# Usage
+# Document aligner & friends
+
+Kitchen-sink example:
 ```
-Usage: ./dalign TRANSLATED-TOKENS ENGLISH-TOKENS
+gzip -cd is/sentences_en.gz | b64filter tokenize | gzip -c is/tokenized_en.gz
+
+< en/sentences.gz | docenc -d | tokenize | docenc | gzip -c en/tokenised.gz
+
+docalign is/tokenised_en.gz en/tokenised.gz \
+    | docjoin -li -ri -l is/sentences.gz -r en/sentences.gz -l is/sentences_en.gz \
+    | parallel --gnu --pipe bluealign-cpp \
+    | gzip -c \
+    > aligned.gz
+```
+
+# Tools
+Besides docalign and it's little companion tool docjoin there are a couple more tools in here to work with base64-encoded documents.
+
+- **docalign**: Give it two (optionally compressed) files with base64-encoded tokenised documents, and it will tell you how well each of the documents in the two files match up. Output is scores + document indices. To be used with docjoin.
+- **docjoin**: Take two sets of input files, and merge their lines into multiple columns based on index pairs provided to stdin.
+- **docenc**: Encode (or decode) sentences into documents. Sentences are grouped in documents by separating batches of sentences by a document marker. This can be either an empty line (i.e. \n, like HTTP) or \0 (when using the -0 flag). Reminder for myself: encode (the default) combines sentences into documents. Decode explodes documents into sentences. Sentences are always split by newlines, documents either by blank lines or null bytes.
+- **b64filter**: Wraps a program and passes all lines from all documents through. Think of `< sentences.gz b64filter cat` as `< sentences.gz docenc -d | cat | docenc`. Difference is that it doesn't pass any document separators to the delegate program, it just counts how many lines go in and gathers that many lines at the output side of it. C++ reimplementation of [b64filter](https://github.com/paracrawl/b64filter)
+
+# docalign
+```
+Usage: docalign TRANSLATED-TOKENS ENGLISH-TOKENS
 
 Additional options:
   --help                  produce help message
   --df-sample-rate arg    set sample rate to every n-th document (default: 1)
-  --threads arg           set number of threads (default: all)
+  -n [ --ngram_size ] arg ngram size (default: 2)
+  -j [ --jobs ] arg       set number of threads (default: all)
   --threshold arg         set score threshold (default: 0.1)
-  --translated-tokens arg set input filename
-  --english-tokens arg    set input filename
+  --min_count arg         minimal number of documents an ngram can appear in to
+                          be included in DF (default: 2)
+  --max_count arg         maximum number of documents for ngram to to appear in
+                          (default: 1000)
+  --best arg              only output the best match for each document
+                          (default: on)
+  -v [ --verbose ]        show additional output
 ```
 
 It is advisable to pass in --df-sample-rate to reduce start-up time and memory
