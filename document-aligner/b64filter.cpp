@@ -5,6 +5,9 @@
 #include <cstdio>
 #include <stdexcept>
 #include <sys/wait.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #include <thread>
 #include <unistd.h>
 #include <signal.h>
@@ -54,7 +57,9 @@ public:
 			return;
 
 		// Terminate if parent stops
-		// prctl(PR_SET_PDEATHSIG, SIGTERM);
+		# ifdef __linux__
+		prctl(PR_SET_PDEATHSIG, SIGTERM);
+		# endif
 
 		// We're in the child, so we don't need these ends of the pipes here.
 		in.reset();
