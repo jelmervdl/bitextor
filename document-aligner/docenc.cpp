@@ -1,8 +1,10 @@
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <unistd.h>
-#include <deque>
+#include <vector>
 #include "util/file_stream.hh"
 #include "util/file_piece.hh"
 #include "util/string_piece.hh"
@@ -15,9 +17,9 @@ enum Mode {
 	DECOMPRESS
 };
 
-void decode(util::FilePiece &in, util::FileStream &out, char separator, deque<size_t> const &indices) {
+void decode(util::FilePiece &in, util::FileStream &out, char delimiter, vector<size_t> const &indices) {
 	size_t document_index = 0;
-	deque<size_t>::const_iterator indices_it(indices.begin());
+	vector<size_t>::const_iterator indices_it(indices.begin());
 
 
 	for (StringPiece line : in) {
@@ -33,7 +35,7 @@ void decode(util::FilePiece &in, util::FileStream &out, char separator, deque<si
 
 		string document;
 		bitextor::base64_decode(line, document);
-		out << document << separator;
+		out << document << delimiter;
 
 		// Have we found all our indices? Then stop early
 		if (!indices.empty() && indices_it == indices.end())
@@ -41,10 +43,10 @@ void decode(util::FilePiece &in, util::FileStream &out, char separator, deque<si
 	}
 }
 
-void encode(util::FilePiece &in, util::FileStream &out, char separator, deque<size_t> const &indices) {
+void encode(util::FilePiece &in, util::FileStream &out, char delimiter, vector<size_t> const &indices) {
 	size_t document_index = 0;
 	string document;
-	deque<size_t>::const_iterator indices_it(indices.begin());
+	vector<size_t>::const_iterator indices_it(indices.begin());
 
 	bool is_eof = false;
 	while (!is_eof) {
@@ -54,22 +56,22 @@ void encode(util::FilePiece &in, util::FileStream &out, char separator, deque<si
 		// Start accumulating lines that make up a document
 		StringPiece line;
 		while (true) {
-			is_eof = !in.ReadLineOrEOF(line, separator, true);
+			is_eof = !in.ReadLineOrEOF(line, delimiter, true);
 			
 			if (is_eof)
 				break;
 
-			// Is this the document separator when using \n\n as delimiter?
+			// Is this the document delimiter when using \n\n as delimiter?
 			if (line.empty())
 				break;
 			
 			document.append(line.data(), line.size());
 			
-			// Add back the \n separator for lines
-			if (separator == '\n')
+			// Add back the \n delimiter for lines
+			if (delimiter == '\n')
 				document.push_back('\n');
 
-			if (separator != '\n')
+			if (delimiter != '\n')
 				break;
 		}
 
@@ -97,56 +99,94 @@ void encode(util::FilePiece &in, util::FileStream &out, char separator, deque<si
 }
 
 int usage(char program_name[]) {
-	cerr << "Usage: " << program_name << " [ -d ] [ -0 ] [ index ... ]\n";
+	cerr << "Usage: " << program_name << " [ -d ] [ -0 ] [ index ... ] [ files ... ]\n";
 	return 1;
 }
 
-int main(int argc, char **argv) {
-	deque<size_t> indices;
+bool parse_range(const char *arg, vector<size_t> &indices) {
+	stringstream sin(arg);
+	
+	// Try to read a number
+	size_t start;
+	if (!(sin >> start))
+		return false;
 
+	// Was that all? Done!
+	if (sin.peek() == EOF) {
+		indices.push_back(start);
+		return true;
+	}
+		
+	// See whether we can read the second part of e.g. "1-3"
+	size_t end;
+	if (sin.get() != '-' || !(sin >> end))
+		return false;
+
+	UTIL_THROW_IF(start > end, util::Exception, "Cannot understand " << arg
+		<< ": " << start << " is larger than " << end << ".\n");
+
+	// Was that all? Great!
+	if (sin.peek() == EOF) {
+		while (start <= end)
+			indices.push_back(start++);
+		return true;
+	}
+
+	// There is more, I don't understand
+	return false;
+}
+
+int main(int argc, char **argv) {
 	Mode mode = COMPRESS;
 
-	char separator = '\n'; // default: second newline
+	char delimiter = '\n'; // default: second newline
 
-	for (int i = 1; i < argc; ++i) {
-		if (argv[i][0] == '-') {
-			switch (argv[i][1]) {
-				case 'd':
-					mode = DECOMPRESS;
-					break;
+	vector<util::FilePiece> files;
+	vector<size_t> indices;
+	
+	try {
+		for (int i = 1; i < argc; ++i) {
+			if (argv[i][0] == '-') {
+				switch (argv[i][1]) {
+					case 'd':
+						mode = DECOMPRESS;
+						break;
 
-				case '0':
-					separator = '\0';
-					break;
+					case '0':
+						delimiter = '\0';
+						break;
 
-				default:
-					cerr << "Unknown option " << argv[i] << '\n';
-					return usage(argv[0]);
+					default:
+						UTIL_THROW(util::Exception, "Unknown option " << argv[i] << ".\n");
+				}
+			} else if (parse_range(argv[i], indices)) {
+				// Okay!
+			} else {
+				files.emplace_back(argv[i]);
 			}
-		} else {
-			size_t index = atoi(argv[i]);
-			
-			if (index == 0) {
-				cerr << "Did not understand document index " << argv[i] << '\n';
-				return usage(argv[0]);
-			}
-
-			indices.push_back(index);
 		}
+	} catch (util::Exception &e) {
+		cerr << e.what();
+		return usage(argv[0]);
 	}
 
 	sort(indices.begin(), indices.end());
 
-	util::FilePiece in(STDIN_FILENO);
+	// If no files are passed in, read from stdi
+	if (files.empty())
+		files.emplace_back(STDIN_FILENO);
+
 	util::FileStream out(STDOUT_FILENO);
 
-	switch (mode) {
-		case DECOMPRESS:
-			decode(in, out, separator, indices);
-			break;
-		case COMPRESS:
-			encode(in, out, separator, indices);
-			break;
+	for (util::FilePiece &in : files) {
+		switch (mode) {
+			case DECOMPRESS:
+				decode(in, out, delimiter, indices);
+				break;
+			case COMPRESS:
+				encode(in, out, delimiter, indices);
+				break;
+		}
 	}
 
 	return 0;
