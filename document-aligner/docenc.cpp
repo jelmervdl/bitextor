@@ -17,7 +17,7 @@ enum Mode {
 	DECOMPRESS
 };
 
-void decode(util::FilePiece &in, util::FileStream &out, char delimiter, vector<size_t> const &indices) {
+size_t decode(util::FilePiece &in, util::FileStream &out, char delimiter, vector<size_t> const &indices, bool &delimiter_encountered) {
 	size_t document_index = 0;
 	vector<size_t>::const_iterator indices_it(indices.begin());
 
@@ -35,15 +35,21 @@ void decode(util::FilePiece &in, util::FileStream &out, char delimiter, vector<s
 
 		string document;
 		bitextor::base64_decode(line, document);
+
+		if (!delimiter_encountered && document.find(delimiter == '\n' ? string("\n\n") : string(&delimiter, 1)) != string::npos)
+			delimiter_encountered = true;
+
 		out << document << delimiter;
 
 		// Have we found all our indices? Then stop early
 		if (!indices.empty() && indices_it == indices.end())
 			break;
 	}
+
+	return document_index;
 }
 
-void encode(util::FilePiece &in, util::FileStream &out, char delimiter, vector<size_t> const &indices) {
+size_t encode(util::FilePiece &in, util::FileStream &out, char delimiter, vector<size_t> const &indices) {
 	size_t document_index = 0;
 	string document;
 	vector<size_t>::const_iterator indices_it(indices.begin());
@@ -51,8 +57,7 @@ void encode(util::FilePiece &in, util::FileStream &out, char delimiter, vector<s
 	bool is_eof = false;
 	while (!is_eof) {
 		document.clear();
-		++document_index;
-
+		
 		// Start accumulating lines that make up a document
 		StringPiece line;
 		while (true) {
@@ -62,7 +67,7 @@ void encode(util::FilePiece &in, util::FileStream &out, char delimiter, vector<s
 				break;
 
 			// Is this the document delimiter when using \n\n as delimiter?
-			if (line.empty())
+			if (delimiter == '\n' && line.empty())
 				break;
 			
 			document.append(line.data(), line.size());
@@ -79,6 +84,8 @@ void encode(util::FilePiece &in, util::FileStream &out, char delimiter, vector<s
 		if (is_eof && document.empty())
 			break;
 		
+		++document_index;
+
 		// Check whether this is a document we care about
 		if (!indices.empty()) {
 			if (*indices_it != document_index) {
@@ -96,11 +103,13 @@ void encode(util::FilePiece &in, util::FileStream &out, char delimiter, vector<s
 		bitextor::base64_encode(StringPiece(document.data(), document.size()), encoded_document);
 		out << encoded_document << '\n';
 	}
+
+	return document_index;
 }
 
 int usage(char program_name[]) {
-	cerr << "Usage: " << program_name
-	     << " [ -d ] [ -0 ] [ index ... ] [ files ... ]\n"
+	cerr << "Usage: "
+	     << program_name << " [ index ... ] [ files ... ]\n"
 	        "\n"
 	        "Indices:\n"
 	        "  N    Single index, starting with 1\n"
@@ -108,7 +117,9 @@ int usage(char program_name[]) {
 	        "\n"
 	        "Options:\n"
 	        "  -d   Decode, i.e. base64 to text (default: encode)\n"
-	        "  -0   Use nullbyte as document delimiter (default: blank line)\n";
+	        "  -0   Use nullbyte as document delimiter (default: blank line)\n"
+	        "  -q   Do not voice concerns\n"
+	        "  -v   Voice additional info\n";
 	return 1;
 }
 
@@ -147,6 +158,7 @@ bool parse_range(const char *arg, vector<size_t> &indices) {
 
 int main(int argc, char **argv) {
 	Mode mode = COMPRESS;
+	uint8_t verbose = 1;
 
 	char delimiter = '\n'; // default: second newline
 
@@ -159,6 +171,14 @@ int main(int argc, char **argv) {
 				switch (argv[i][1]) {
 					case 'd':
 						mode = DECOMPRESS;
+						break;
+
+					case 'v':
+						verbose = 2;
+						break;
+
+					case 'q':
+						verbose = 0;
 						break;
 
 					case '0':
@@ -187,16 +207,27 @@ int main(int argc, char **argv) {
 
 	util::FileStream out(STDOUT_FILENO);
 
+	size_t document_count = 0;
+
 	for (util::FilePiece &in : files) {
+		// Initialize this with true to skip checks altogether
+		bool delimiter_encountered = verbose > 0 ? false : true;
+		
 		switch (mode) {
 			case DECOMPRESS:
-				decode(in, out, delimiter, indices);
+				document_count += decode(in, out, delimiter, indices, delimiter_encountered);
 				break;
 			case COMPRESS:
-				encode(in, out, delimiter, indices);
+				document_count += encode(in, out, delimiter, indices);
 				break;
 		}
+
+		if (verbose > 0 && delimiter_encountered)
+			cerr << "Warning: document separator occurs in documents in " << in.FileName() << ".\n";
 	}
+
+	if (verbose > 1)
+		cerr << "Processed " << document_count << " documents.\n";
 
 	return 0;
 }
