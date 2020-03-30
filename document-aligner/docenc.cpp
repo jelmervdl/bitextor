@@ -99,7 +99,16 @@ void encode(util::FilePiece &in, util::FileStream &out, char delimiter, vector<s
 }
 
 int usage(char program_name[]) {
-	cerr << "Usage: " << program_name << " [ -d ] [ -0 ] [ index ... ] [ files ... ]\n";
+	cerr << "Usage: " << program_name
+	     << " [ -d ] [ -0 ] [ index ... ] [ files ... ]\n"
+	        "\n"
+	        "Indices:\n"
+	        "  N    Single index, starting with 1\n"
+	        "  M-N  Index range, i.e. 1-3 expands to 1 2 3\n"
+	        "\n"
+	        "Options:\n"
+	        "  -d   Decode, i.e. base64 to text (default: encode)\n"
+	        "  -0   Use nullbyte as document delimiter (default: blank line)\n";
 	return 1;
 }
 
