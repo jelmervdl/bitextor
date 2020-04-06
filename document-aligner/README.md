@@ -7,6 +7,7 @@ gzip -cd is/sentences_en.gz | b64filter tokenize | gzip -c is/tokenized_en.gz
 < en/sentences.gz | docenc -d | tokenize | docenc | gzip -c en/tokenised.gz
 
 docalign is/tokenised_en.gz en/tokenised.gz \
+    | cut -f2 -f3 \
     | docjoin -li -ri -l is/sentences.gz -r en/sentences.gz -l is/sentences_en.gz \
     | parallel --gnu --pipe bluealign-cpp \
     | gzip -c \
@@ -57,7 +58,7 @@ and ENGLISH-TOKENS, separated by tabs to STDOUT.
 # docjoin
 ```
 Usage: bin/docjoin [ -l filename | -r filename | -li | -ri ] ...
-Input via stdin: <float> "\t" <left index> "\t" <right index> "\n"
+Input via stdin: <left index> "\t" <right index> "\n"
 
 This program joins rows from two sets of files into tab-separated output.
 
