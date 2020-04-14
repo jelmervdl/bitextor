@@ -3,6 +3,7 @@
 #include <iostream>
 #include <sstream>
 #include <memory>
+#include <numeric>
 #include "util/file_piece.hh"
 #include "src/base64.h"
 
@@ -95,7 +96,10 @@ int main(int argc, char *argv[]) {
 	FileSet left_files, right_files;
 	vector<Source> order;
 	Source side = LEFT;
+
+	// Trick to easily switch between left & right files using side
 	FileSet *files[]{&left_files, &right_files};
+	
 	for (int pos = 1; pos < argc; ++pos) {
 		if (string(argv[pos]) == "-l")
 			side = LEFT;
@@ -121,19 +125,35 @@ int main(int argc, char *argv[]) {
 			joins.push_back(join);
 	}
 
+	// Empty input? Empty output! Totally fine!
+	if (joins.empty())
+		return 0;
+
 	// Sort our joins by the right index so we can go through all right rows
 	// in a sequential order.
 	sort(joins.begin(), joins.end(), [](Join const &left, Join const &right) {
 		return left.right_index < right.right_index;
 	});
 
+	size_t max_left_index = accumulate(joins.begin(), joins.end(), 0, [](size_t current_max, Join const &join) {
+		return max(current_max, join.left_index);
+	});
+
 	// Read all of the left in memory
 	vector<Row> left_rows;
-	while (true) {
-		Row row;
-		if (!read_row(left_files, row))
-			break;
-		left_rows.push_back(move(row));
+	left_rows.reserve(max_left_index);
+
+	if (!left_files.empty()) {
+		while (left_rows.size() < max_left_index) {
+			Row row;
+			if (!read_row(left_files, row))
+				break;
+			left_rows.push_back(move(row));
+		}
+	} else {
+		// If there are no files to read into memory, just create empty rows
+		// to make the logic downstream simpler.
+		left_rows.resize(max_left_index);
 	}
 
 	// For all joins (sorted by their right index) start reading through right
