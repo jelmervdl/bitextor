@@ -118,11 +118,17 @@ int main(int argc, char *argv[]) {
 	// Read our joins into memory
 	vector<Join> joins;
 	string line;
+	size_t index = 0;
 	while (getline(cin, line)) {
+		++index;
 		istringstream iline(line);
 		Join join;
-		if (iline >> join.left_index >> join.right_index)
+		if (iline >> join.left_index >> join.right_index) {
 			joins.push_back(join);
+		} else {
+			cerr << "Parse error at line " << index << " \"" << line << "\"\n";
+			return 1;
+		}
 	}
 
 	// Empty input? Empty output! Totally fine!
