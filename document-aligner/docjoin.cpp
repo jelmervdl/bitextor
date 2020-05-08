@@ -36,15 +36,15 @@ ostream &operator<<(ostream &out, Row const &row) {
 
 typedef vector<unique_ptr<util::FilePiece>> FileSet;
 
-bool skip_rows(FileSet &files, size_t n) {
+size_t skip_rows(FileSet &files, size_t n) {
 	StringPiece line;
 
 	for (auto &file : files)
 		for (size_t i = 0; i < n; ++i)
 			if (!file->ReadLineOrEOF(line))
-				return false;
+				return i;
 
-	return true;
+	return n;
 }
 
 bool read_row(FileSet &files, Row &row) {
@@ -164,28 +164,33 @@ int main(int argc, char *argv[]) {
 
 	// For all joins (sorted by their right index) start reading through right
 	// and every time we encounter one that we need we print left + right.
-	size_t right_index = 0; // the indices used by docalign start at 1
+
+	size_t right_offset = 0; // the indices used by docalign start at 1, so
+	                         // let's call everything that starts counting at
+	                         // 0 "offset"
 	Row right_row;
 	for (auto join_it = joins.begin(); join_it != joins.end(); ++join_it) {
 		// Assume we sorted correctly and we read from 1 to n without jumps...
-		assert(join_it->right_index >= right_index);
+		assert(join_it->right_index >= right_offset);
 
 		// While our index is still far off, skip rows
-		if (right_index < join_it->right_index - 1) {
-			if (!skip_rows(right_files, (join_it->right_index - 1) - right_index)) {
-				cerr << "Right index " << join_it->right_index << " outside of range " << right_index << endl;
+		if (right_offset < join_it->right_index - 1) {
+			size_t rows_to_skip = (join_it->right_index - 1) - right_offset;
+			size_t rows_skipped = skip_rows(right_files, rows_to_skip);
+			if (rows_skipped != rows_to_skip) {
+				cerr << "Right index " << join_it->right_index << " outside of range " << right_offset + rows_skipped << endl;
 				return 1;
 			}
-			right_index = join_it->right_index - 1;
+			right_offset += rows_skipped;
 		}
 
 		// Next row is the row we want, read it.
-		if (right_index == join_it->right_index - 1) {
+		if (right_offset == join_it->right_index - 1) {
 			if (!read_row(right_files, right_row)) {
-				cerr << "Right index " << join_it->right_index << " outside of range " << right_index << endl;
+				cerr << "Right index " << join_it->right_index << " outside of range " << right_offset << endl;
 				return 1;
 			}
-			++right_index;
+			++right_offset;
 		}
 
 		// Our left index is outside of what's in memory? Sad!
