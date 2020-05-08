@@ -18,7 +18,19 @@ enum Mode {
 	DECOMPRESS
 };
 
-size_t decode(util::FilePiece &in, util::FileStream &out, char delimiter, vector<size_t> const &indices, bool &delimiter_encountered) {
+string prefix_lines(string const &input, string const prefix)
+{
+	stringstream sin(input);
+	stringstream sout;
+
+	string line;
+	while (getline(sin, line))
+		sout << prefix << line << '\n';
+
+	return sout.str();
+}
+
+size_t decode(util::FilePiece &in, util::FileStream &out, char delimiter, vector<size_t> const &indices, bool print_document_index, bool &delimiter_encountered) {
 	size_t document_index = 0;
 	vector<size_t>::const_iterator indices_it(indices.begin());
 
@@ -39,6 +51,9 @@ size_t decode(util::FilePiece &in, util::FileStream &out, char delimiter, vector
 
 		if (!delimiter_encountered && document.find(delimiter == '\n' ? string("\n\n") : string(&delimiter, 1)) != string::npos)
 			delimiter_encountered = true;
+
+		if (print_document_index)
+			document = prefix_lines(document, to_string(document_index) + "\t");
 
 		out << document << delimiter;
 
@@ -120,7 +135,8 @@ int usage(char program_name[]) {
 	        "  -d   Decode, i.e. base64 to text (default: encode)\n"
 	        "  -0   Use nullbyte as document delimiter (default: blank line)\n"
 	        "  -q   Do not voice concerns\n"
-	        "  -v   Voice additional info\n";
+	        "  -v   Voice additional info\n"
+	        "  -n   Print document index for each line\n";
 	return 1;
 }
 
@@ -162,6 +178,7 @@ int main(int argc, char **argv) {
 	uint8_t verbose = 1;
 
 	char delimiter = '\n'; // default: second newline
+	bool print_document_index = false;
 
 	vector<util::FilePiece> files;
 	vector<size_t> indices;
@@ -186,6 +203,10 @@ int main(int argc, char **argv) {
 						delimiter = '\0';
 						break;
 
+					case 'n':
+						print_document_index = true;
+						break;
+
 					default:
 						UTIL_THROW(util::Exception, "Unknown option " << argv[i] << ".\n");
 				}
@@ -200,6 +221,9 @@ int main(int argc, char **argv) {
 		return usage(argv[0]);
 	}
 
+	if (print_document_index && mode == COMPRESS)
+		cerr << "Warning: printing document numbers (i.e. using -n) won't do anything.\n";
+	
 	sort(indices.begin(), indices.end());
 
 	// If no files are passed in, read from stdi
@@ -216,7 +240,7 @@ int main(int argc, char **argv) {
 		
 		switch (mode) {
 			case DECOMPRESS:
-				document_count += decode(in, out, delimiter, indices, delimiter_encountered);
+				document_count += decode(in, out, delimiter, indices, print_document_index, delimiter_encountered);
 				break;
 			case COMPRESS:
 				document_count += encode(in, out, delimiter, indices);
