@@ -22,6 +22,74 @@
 using namespace std;
 using namespace bitextor;
 
+/**
+ * Single producer queue. Straight up copy of KPU's preprocess library with
+ * the addition of an Empty() method that does non-blocking checking whether
+ * we might be at the end of the queue.
+ */
+template <class T> class UnboundedSingleQueue {
+  public:
+  	typedef util::UnboundedPage<T> Page;
+
+    UnboundedSingleQueue() : valid_(0) {
+      SetFilling(new Page());
+      SetReading(filling_);
+    }
+
+    void Produce(const T &val) {
+      if (filling_current_ == filling_end_) {
+        Page *next = new Page();
+        filling_->next = next;
+        SetFilling(next);
+      }
+      *(filling_current_++) = val;
+      valid_.post();
+    }
+
+    T& Consume(T &out) {
+      util::WaitSemaphore(valid_);
+      if (reading_current_ == reading_end_) {
+        SetReading(reading_->next);
+      }
+      out = *(reading_current_++);
+      return out;
+    }
+
+    // Warning: very much a no-guarantees race-condition-rich implementation!
+    // But sufficient for our specific purpose.
+    bool Empty() const {
+      return reading_current_ == filling_current_;
+    }
+
+  private:
+    void SetFilling(Page *to) {
+      filling_ = to;
+      filling_current_ = to->entries;
+      filling_end_ = filling_current_ + sizeof(to->entries) / sizeof(T);
+    }
+
+    void SetReading(Page *to) {
+      reading_.reset(to);
+      reading_current_ = to->entries;
+      reading_end_ = reading_current_ + sizeof(to->entries) / sizeof(T);
+    }
+
+    util::Semaphore valid_;
+
+    Page *filling_;
+
+    std::unique_ptr<Page> reading_;
+
+    T *filling_current_;
+    T *filling_end_;
+    T *reading_current_;
+    T *reading_end_;
+
+    UnboundedSingleQueue(const UnboundedSingleQueue &) = delete;
+    UnboundedSingleQueue &operator=(const UnboundedSingleQueue &) = delete;
+};
+
+
 void make_pipe(util::scoped_fd &read_end, util::scoped_fd &write_end) {
 	int fds[2];
 	
@@ -31,6 +99,7 @@ void make_pipe(util::scoped_fd &read_end, util::scoped_fd &write_end) {
 	read_end.reset(fds[0]);
 	write_end.reset(fds[1]);
 }
+
 
 class subprocess {
 public:
@@ -77,10 +146,7 @@ public:
 
 		execvp(program_.c_str(), argv);
 
-		cerr << "SHJOT" << endl;
-
-		// I should not be reached! If I am, execvp failed.
-		abort();
+		throw util::ErrnoException();
 	}
 
 	int wait() {
@@ -105,13 +171,14 @@ private:
 	pid_t pid_;
 };
 
+
 int main(int argc, char **argv) {
 	if (argc < 2) {
-		cerr << "usage: " << argv[0] << " command.\n";
+		cerr << "usage: " << argv[0] << " command [command-args...]\n";
 		return 1;
 	}
 
-	util::UnboundedSingleQueue<size_t> line_cnt_queue;
+	UnboundedSingleQueue<size_t> line_cnt_queue;
 
 	subprocess child(argv[1]);
 
@@ -144,12 +211,12 @@ int main(int argc, char **argv) {
 			child_in << doc;
 		}
 
+		// Tell the reader to stop
+		line_cnt_queue.Produce(0);
+
 		// Flush (blocks) & close the child's stdin
 		child_in.flush();
 		child.in.reset();
-
-		// Tell the reader to stop
-		line_cnt_queue.Produce(0);
 	});
 
 	thread reader([&child, &line_cnt_queue]() {
@@ -163,15 +230,41 @@ int main(int argc, char **argv) {
 			doc.clear();
 			doc.reserve(line_cnt * 4096); // 4096 is not a typical line length
 
-			while (line_cnt-- > 0) {
-				StringPiece line(child_out.ReadLine());
-				doc.append(line.data(), line.length());
-				doc.push_back('\n');
+			try {
+				while (line_cnt-- > 0) {
+					StringPiece line(child_out.ReadLine());
+					doc.append(line.data(), line.length());
+					doc.push_back('\n');
+				}
+			} catch (util::EndOfFileException &e) {
+				UTIL_THROW(util::Exception, "Sub-process stopped producing while expecting more lines");
 			}
 
 			string encoded_doc;
 			base64_encode(doc, encoded_doc);
 			out << encoded_doc << '\n';
+
+			// Just to check, next time we call Consume(), will we block? If so,
+			// that means we've caught up with the producer. However, the order
+			// the producer fills line_cnt_queue is first giving us a new line-
+			// count and then sending the input to the sub-process. So if we do
+			// not have a new line count yet, the sub-process definitely can't
+			// have new output yet, and peek should block and once it unblocks
+			// we expect to have that line-count waiting. If we still don't,
+			// then what is this output that is being produced by the sub-
+			// process?
+			if (line_cnt_queue.Empty()) {
+				// If peek throws EOF now our sub-process stopped before its
+				// stdin was closed (producer produces the poison before it
+				// closes the sub-process's stdin.)
+				child_out.peek();
+				
+				// peek() came back. We have a line-number now, right? If not
+				// sub-process is producing output without any input to base it
+				// on. Which is bad.
+				if (line_cnt_queue.Empty())
+					UTIL_THROW(util::Exception, "sub-process is producing more output than it was given input");
+			}
 		}
 	});
 
