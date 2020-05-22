@@ -67,5 +67,10 @@ if (BUILD_TESTING)
   target_compile_definitions(ngram_test PRIVATE "BOOST_TEST_DYN_LINK=1")
   target_link_libraries(ngram_test ${Boost_UNIT_TEST_FRAMEWORK_LIBRARY} preprocess_util)
   add_test(NAME ngram_test COMMAND ngram_test)
+
+  add_executable(broadcast_queue_test tests/broadcast_queue_test.cpp)
+  target_compile_definitions(broadcast_queue_test PRIVATE "BOOST_TEST_DYN_LINK=1")
+  target_link_libraries(broadcast_queue_test ${Boost_UNIT_TEST_FRAMEWORK_LIBRARY} preprocess_util)
+  add_test(NAME broadcast_queue_test COMMAND broadcast_queue_test)
 endif (BUILD_TESTING)
 
