@@ -7,6 +7,7 @@
 namespace bitextor {
 
 struct queue_performance {
+	size_t processed;
 	size_t overflow;
 	size_t underflow;
 };
@@ -32,7 +33,7 @@ private:
 template <typename T> blocking_queue<T>::blocking_queue(size_t size)
 :
 	_size(size),
-	_performance{0,0} {
+	_performance{0,0,0} {
 	//
 }
 
@@ -45,6 +46,7 @@ template <typename T> void blocking_queue<T>::push(T &&item) {
 	}
 
 	_buffer.push(std::move(item));
+	++_performance.processed;
 	mlock.unlock();
 	_added.notify_one();
 }
@@ -58,6 +60,7 @@ template <typename T> void blocking_queue<T>::push(T const &item) {
 	}
 	
 	_buffer.push(item);
+	++_performance.processed;
 	mlock.unlock();
 	_added.notify_one();
 }

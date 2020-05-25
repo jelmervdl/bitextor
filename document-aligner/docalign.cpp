@@ -55,7 +55,8 @@ template <typename T> void stop(blocking_queue<unique_ptr<T>> &queue, vector<thr
 }
 
 ostream &operator<<(ostream &out, queue_performance const &performance) {
-	return out << "  underflow: " << performance.underflow << '\n'
+	return out << "  processed: " << performance.processed << '\n'
+	           << "  underflow: " << performance.underflow << '\n'
 	           << "   overflow: " << performance.overflow << '\n';
 }
 
