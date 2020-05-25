@@ -3,6 +3,7 @@
 #include <fstream>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 #include <thread>
 #include <memory>
 #include <mutex>
@@ -67,11 +68,11 @@ void print_score(float score, size_t left_id, size_t right_id)
 	     << '\n';
 }
 
-size_t queue_lines(util::FilePiece &fin, blocking_queue<unique_ptr<Line>> &queue, size_t skip_rate = 1)
+size_t queue_lines(util::FilePiece &fin, blocking_queue<unique_ptr<Line>> &queue, size_t sample_rate = 1)
 {
 	size_t document_count = 0;
 	for (StringPiece line : fin) {
-		if (document_count++ % skip_rate)
+		if (document_count++ % sample_rate)
 			continue;
 
 		queue.push(unique_ptr<Line>(new Line{
@@ -83,10 +84,76 @@ size_t queue_lines(util::FilePiece &fin, blocking_queue<unique_ptr<Line>> &queue
 	return document_count;
 }
 
-size_t queue_lines(std::string const &path, blocking_queue<unique_ptr<Line>> &queue, size_t skip_rate = 1)
+size_t queue_lines(std::string const &path, blocking_queue<unique_ptr<Line>> &queue, size_t sample_rate = 1)
 {
 	util::FilePiece fin(path.c_str());
-	return queue_lines(fin, queue, skip_rate);
+	return queue_lines(fin, queue, sample_rate);
+}
+
+size_t count_ngrams(std::string const &path, unordered_map<NGram, size_t> &df, size_t n_threads, size_t ngram_size, size_t sample_rate)
+{
+	blocking_queue<unique_ptr<Line>> queue(n_threads * 128);
+
+	mutex df_mutex;
+	
+	vector<thread> workers(start(n_threads, [&queue, &df, &df_mutex, &ngram_size, &sample_rate]() {
+		unordered_map<NGram, size_t> local_df;
+
+		while (true) {
+			unique_ptr<Line> line(queue.pop());
+
+			if (!line)
+				break;
+
+			Document document;
+			ReadDocument(line->str, document, ngram_size);
+			for (auto const &entry : document.vocab)
+				local_df[entry.first] += 1; // Count once every document
+		}
+
+		// Merge the local DF into the global one. Multiply by df_sample_rate
+		// to compensate for reading only nth part of the whole collection.
+		{
+			unique_lock<mutex> lock(df_mutex);
+			for (auto const &entry : local_df)
+				df[entry.first] += entry.second * sample_rate;
+		}
+	}));
+
+	// We'll use in_document_cnt later to reserve some space for the documents
+	// we want to keep in memory. (Also this line is the whole reason the
+	// worker management + reading isn't wrapped in a single function: I
+	// want to re-use the same workers for two files.)
+	size_t document_cnt = queue_lines(path, queue, sample_rate);
+	
+	stop(queue, workers);
+
+	return document_cnt;
+}
+
+bool contains_tokens(Document const &doc, unordered_set<NGram> const &tokens)
+{
+	for (auto const &token_cnt : doc.vocab)
+		if (tokens.count(token_cnt.first) > 0)
+			return true;
+
+	return false;
+}
+
+void prune_df(unordered_map<NGram, size_t> &df, size_t min_ngram_cnt, size_t max_ngram_cnt)
+{
+	unordered_map<NGram, size_t> pruned_df;
+	for (auto const &entry : df) {
+		if (entry.second < min_ngram_cnt)
+			continue;
+
+		if (entry.second > max_ngram_cnt)
+			continue;
+
+		pruned_df[entry.first] = entry.second;
+	}
+
+	swap(df, pruned_df);
 }
 
 int main(int argc, char *argv[])
@@ -160,75 +227,37 @@ int main(int argc, char *argv[])
 	// that parse documents and keep a local hash table for counting. At the
 	// end these tables are merged into df.
 	unordered_map<NGram,size_t> df;
-	size_t in_document_cnt, en_document_cnt, document_cnt;
 
-	{
-		mutex df_mutex;
-		blocking_queue<unique_ptr<Line>> queue(n_sample_threads * 128);
-		vector<thread> workers(start(n_sample_threads, [&queue, &df, &df_mutex, &ngram_size, &df_sample_rate]() {
-			unordered_map<NGram, size_t> local_df;
+	size_t in_document_cnt = count_ngrams(vm["translated-tokens"].as<std::string>(), df, n_sample_threads, ngram_size, df_sample_rate);
 
-			while (true) {
-				unique_ptr<Line> line(queue.pop());
+	// Make a set of all ngrams encountered in the foreign documents so we can filter the English
+	// documents on them easily later on. Hopefully it removes a lot of non-candidates early on.
+	unordered_set<NGram> in_document_tokens;
+	for (auto const &token_cnt : df)
+		in_document_tokens.emplace(token_cnt.first);
 
-				if (!line)
-					break;
 
-				Document document;
-				ReadDocument(line->str, document, ngram_size);
-				for (auto const &entry : document.vocab)
-					local_df[entry.first] += 1; // Count once every document
-			}
+	size_t en_document_cnt = count_ngrams(vm["english-tokens"].as<std::string>(), df, n_sample_threads, ngram_size, df_sample_rate);
+	
+	size_t document_cnt = in_document_cnt + en_document_cnt;
 
-			// Merge the local DF into the global one. Multiply by df_sample_rate
-			// to compensate for reading only nth part of the whole collection.
-			{
-				unique_lock<mutex> lock(df_mutex);
-				for (auto const &entry : local_df)
-					df[entry.first] += entry.second * df_sample_rate;
-			}
-		}));
-
-		// We'll use in_document_cnt later to reserve some space for the documents
-		// we want to keep in memory. (Also this line is the whole reason the
-		// worker management + reading isn't wrapped in a single function: I
-		// want to re-use the same workers for two files.)
-		en_document_cnt = queue_lines(vm["english-tokens"].as<std::string>(), queue, df_sample_rate);
-		in_document_cnt = queue_lines(vm["translated-tokens"].as<std::string>(), queue, df_sample_rate);
-		document_cnt = in_document_cnt + en_document_cnt;
-
-		stop(queue, workers);
-
-		if (verbose)
-			cerr << "Calculated DF from " << document_cnt / df_sample_rate << " documents" << endl;
-
-		if (verbose)
-			cerr << "DF queue performance:\n" << queue.performance();
-	}
 
 	// Prune the DF table, similar to what the Python implementation does. Note
 	// that these counts are linked to sample-rate already, so if you have a
 	// sample rate of higher than 1, your min_ngram_count should also be a
 	// multiple of sample rate + 1.
 	{
-		unordered_map<NGram, size_t> pruned_df;
-		for (auto const &entry : df) {
-			if (entry.second < min_ngram_cnt)
-				continue;
+		size_t pre_prune_size = df.size();
 
-			if (entry.second > max_ngram_cnt)
-				continue;
+		prune_df(df, min_ngram_cnt, max_ngram_cnt);
 
-			pruned_df[entry.first] = entry.second;
-		}
+		size_t post_prune_size = df.size();
 
 		if (verbose)
-			cerr << "Pruned " << df.size() - pruned_df.size() << " (" << 100.0 - 100.0 * pruned_df.size() / df.size() << "%) entries from DF" << endl;
-
-		swap(df, pruned_df);
+			cerr << "Pruned " << pre_prune_size - post_prune_size << " (" << 100.0 - 100.0 * post_prune_size / pre_prune_size << "%) entries from DF" << endl;
 	}
 
-	// Read translated documents & pre-calculate TF/DF for each of these documents
+	// Read foreign documents & pre-calculate TF/DF for each of these documents
 	std::vector<DocumentRef> refs(in_document_cnt);
 
 	{
@@ -268,7 +297,7 @@ int main(int argc, char *argv[])
 
 		blocking_queue<unique_ptr<DocumentRef>> score_queue(n_score_threads * 256);
 
-		vector<thread> read_workers(start(n_read_threads, [&read_queue, &score_queue, &document_cnt, &df, &ngram_size]() {
+		vector<thread> read_workers(start(n_read_threads, [&read_queue, &score_queue, &document_cnt, &df, &ngram_size, &in_document_tokens]() {
 			while (true) {
 				unique_ptr<Line> line(read_queue.pop());
 
@@ -278,6 +307,12 @@ int main(int argc, char *argv[])
 
 				Document doc{.id = line->n, .vocab = {}};
 				ReadDocument(line->str, doc, ngram_size);
+
+				// Early filter: if this English doc does not contain any words
+				// from any of the foreign documents, it's not going to match
+				// anything. Get rid of it.
+				if (!contains_tokens(doc, in_document_tokens))
+					continue;
 
 				unique_ptr<DocumentRef> ref(new DocumentRef);
 				calculate_tfidf(doc, *ref, document_cnt, df);
