@@ -46,9 +46,16 @@ template<class Function, class... Args> vector<thread> start(unsigned int n_thre
  * Utility to stop & join threads. Needs access to the queue to supply it null pointers after which it waits
  * for the workers to stop & join.
  */
-template <typename T> void stop(blocking_queue<unique_ptr<T>> &queue, vector<thread> &workers) {
+template <class T> void stop(blocking_queue<T> &queue, vector<thread> &workers) {
 	for (size_t i = 0; i < workers.size(); ++i)
 		queue.push(nullptr);
+
+	for (auto &worker : workers)
+		worker.join();
+}
+
+template <class T> void stop(BroadcastQueue<T> &queue, vector<thread> &workers) {
+	queue.push(nullptr);
 
 	for (auto &worker : workers)
 		worker.join();
@@ -245,11 +252,39 @@ int main(int argc, char *argv[])
 	// Read translated documents & pre-calculate TF/DF for each of these documents
 	blocking_queue<unique_ptr<Line>> read_queue(n_threads * 128);
 
-	BroadcastQueue<shared_ptr<Line>> score_queue;
+	blocking_queue<unique_ptr<Line>> load_queue(n_threads * 128);
+
+	BroadcastQueue<shared_ptr<vector<DocumentRef>>> score_queue;
 		
-	vector<thread> workers(start(n_threads, [&read_queue, &df, &document_cnt, &ngram_size, &threshold, &mark_score](BroadcastQueue<shared_ptr<Line>>::listener score_queue_it) {
+	vector<thread> load_workers(start(1, [&load_queue, &score_queue, &document_cnt, &ngram_size, &df]() {
+		shared_ptr<vector<DocumentRef>> buffer(new vector<DocumentRef>());
+
+		while (true) {
+			unique_ptr<Line> line(load_queue.pop());
+
+			if (!line)
+				break;
+
+			Document doc{.id = line->n, .vocab = {}};
+			ReadDocument(line->str, doc, ngram_size);
+
+			buffer->emplace_back();
+			calculate_tfidf(doc, buffer->back(), document_cnt, df);
+
+			if (buffer->size() == 256) {
+				score_queue.push(buffer);
+				buffer.reset(new vector<DocumentRef>());
+			}
+		}
+
+		if (buffer->size())
+			score_queue.push(buffer);
+	}));
+
+	vector<thread> workers(start(n_threads, [&read_queue, &df, &document_cnt, &ngram_size, &threshold, &mark_score](BroadcastQueue<shared_ptr<vector<DocumentRef>>>::listener score_queue_it) {
 		vector<DocumentRef> refs;
 
+		// Load documents we compare to later on
 		while (true) {
 			unique_ptr<Line> line(read_queue.pop());
 
@@ -267,28 +302,31 @@ int main(int argc, char *argv[])
 			calculate_tfidf(doc, refs.back(), document_cnt, df);
 		}
 
+		size_t doc_cnt = 0;
+
+		// Score English documents
 		while (true) {
-			shared_ptr<Line> line(score_queue_it.pop());
+			shared_ptr<vector<DocumentRef>> doc_refs(score_queue_it.pop());
 
 			// Empty pointer is poison
-			if (!line)
+			if (!doc_refs)
 				break;
-
-			Document doc{.id = line->n, .vocab = {}};
-			ReadDocument(line->str, doc, ngram_size);
-
-			DocumentRef doc_ref;
-			calculate_tfidf(doc, doc_ref, document_cnt, df);
 			
 			for (auto const &ref : refs) {
-				float score = calculate_alignment(ref, doc_ref);
+				for (auto const &doc_ref : *doc_refs) {
+					float score = calculate_alignment(ref, doc_ref);
 
-				// Document not a match? Skip to the next.
-				if (score < threshold)
-					continue;
+					// Document not a match? Skip to the next.
+					if (score < threshold)
+						continue;
 
-				mark_score(score, ref, doc_ref);
+					mark_score(score, ref, doc_ref);
+				}
 			}
+
+			doc_cnt += doc_refs->size();
+
+			cerr << "Thread " << this_thread::get_id() << " processed " << doc_cnt << " docs" << endl;
 		}
 	}, score_queue.listen()));
 
@@ -300,19 +338,20 @@ int main(int argc, char *argv[])
 	if (verbose)
 		cerr << "Done reading foreign documents into memory: " << read_queue.performance();
 
-	queue_lines(vm["english-tokens"].as<std::string>(), score_queue);
+	queue_lines(vm["english-tokens"].as<std::string>(), load_queue);
 
 	if (verbose)
 		cerr << "Done reading english documents into the queue" << endl;
 
-	for (size_t n = 0; n < n_threads; ++n)
-		score_queue.push(nullptr);
-
-	for (auto &worker : workers)
-		worker.join();
+	stop(load_queue, load_workers);
 
 	if (verbose)
-		cerr << "All threads have finished" << endl;
+		cerr << "Load workers have finished" << endl;
+
+	stop(score_queue, workers);
+
+	if (verbose)
+		cerr << "Score workers have finished" << endl;
 
 	if (!print_all) {
 		// Sort scores, best on top. Also sort on other properties to make
