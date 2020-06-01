@@ -1,3 +1,4 @@
+#pragma once
 #include "util/murmur_hash.hh"
 
 namespace bitextor {
