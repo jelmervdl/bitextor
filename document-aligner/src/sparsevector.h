@@ -5,27 +5,26 @@
 
 namespace bitextor {
 
-template <class K, class V> class SparseVector {
+template <class Scalar, class Index = uint64_t> class SparseVector {
 public:
-	typedef V value_type;
+	typedef Scalar value_type;
 
-	typedef typename std::vector<K>::iterator iterator;
+	typedef typename std::vector<Index>::iterator iterator;
 
-	typedef typename std::vector<K>::const_iterator const_iterator;
+	typedef typename std::vector<Index>::const_iterator const_iterator;
 
 	SparseVector() : fill_(0) {
 		//
 	}
 
-	void insert(K const &index, V const &value) {
-		if (!(indices_.size() == 0 || indices_.back() < index))
-			throw std::invalid_argument("indices can only be inserted in incrementing order");
-
-		indices_.push_back(index);
-		values_.push_back(value);
+	/**
+	 * Same as operator[], but compatible with Eigen::SparseVector
+	 */
+	Scalar &insert(Index const &index) {
+		return operator[](index);
 	}
 
-	V &operator[](K const &index) {
+	Scalar &operator[](Index const &index) {
 		auto it = std::lower_bound(indices_.begin(), indices_.end(), index);
 		if (it == indices_.end() || *it != index) {
 			indices_.insert(it, index);
@@ -35,7 +34,7 @@ public:
 		}
 	}
 
-	V const &operator[](K const &index) const {
+	Scalar const &operator[](Index const &index) const {
 		auto it = std::lower_bound(indices_.begin(), indices_.end(), index);
 		if (it == indices_.end() || *it != index) {
 			return fill_;
@@ -74,18 +73,24 @@ public:
 		return indices_.cend();
 	}
 
+	template <class T> SparseVector &operator/=(T deliminator) {
+		for (auto &value : values_)
+			value /= deliminator;
+		return *this;
+	}
+
 	/**
 	 * Dot-product of two sparse matrices.
 	 */
-	friend V operator*(SparseVector<K,V> const &left, SparseVector<K,V> const &right) {
-		V sum = 0;
+	Scalar dot(SparseVector<Scalar,Index> const &right) const {
+		Scalar sum = 0;
 	
-		auto liit = left.indices_.cbegin(),
+		auto liit = indices_.cbegin(),
 			 riit = right.indices_.cbegin(),
-			 lend = left.indices_.cend(),
+			 lend = indices_.cend(),
 			 rend = right.indices_.cend();
 
-		auto lvit = left.values_.cbegin(),
+		auto lvit = values_.cbegin(),
 			 rvit = right.values_.cbegin();
 
 		while (liit != lend && riit != rend) {
@@ -107,9 +112,9 @@ public:
 		return sum;
 	}
 private:
-	V fill_;
-	std::vector<K> indices_;
-	std::vector<V> values_;
+	Scalar fill_;
+	std::vector<Index> indices_;
+	std::vector<Scalar> values_;
 };
 
 } // namespace

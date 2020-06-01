@@ -21,7 +21,7 @@ struct DocumentRef {
 	size_t id;
 	
 	// ngram scores as a sorted array for quick sparse dot product
-	SparseVector<NGram, float> wordvec;
+	SparseVector<float, NGram> wordvec;
 };
 
 // Assumes base64 encoded still.

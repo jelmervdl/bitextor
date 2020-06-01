@@ -34,7 +34,7 @@ inline float tfidf(size_t tf, size_t dc, size_t df) {
 void calculate_tfidf(Document const &document, DocumentRef &document_ref, size_t document_count, unordered_map<NGram, size_t> const &df) {
 	document_ref.id = document.id;
 
-	document_ref.wordvec.clear();
+	// document_ref.wordvec.clear();
 	document_ref.wordvec.reserve(document.vocab.size());
 	
 	float total_tfidf_l2 = 0;
@@ -58,13 +58,12 @@ void calculate_tfidf(Document const &document, DocumentRef &document_ref, size_t
 		
 		// Insert the entry in our sparse vector. This is also effectively
 		// insertion sort, but it's not a bottleneck.
-		document_ref.wordvec[entry.first] = document_tfidf;
+		document_ref.wordvec.insert(entry.first) = document_tfidf;
 	}
 	
 	// Normalize
 	total_tfidf_l2 = sqrt(total_tfidf_l2);
-	for (auto const &key : document_ref.wordvec)
-		document_ref.wordvec[key] /= total_tfidf_l2;
+	document_ref.wordvec /= total_tfidf_l2;
 }
 }
 
@@ -72,7 +71,7 @@ void calculate_tfidf(Document const &document, DocumentRef &document_ref, size_t
  * Dot product of two documents (of their ngram frequency really)
  */
 float calculate_alignment(DocumentRef const &left, DocumentRef const &right) {
-	return left.wordvec * right.wordvec;
+	return left.wordvec.dot(right.wordvec);
 }
 
 } // namespace bitextor
