@@ -27,11 +27,14 @@ find_package(ICU REQUIRED COMPONENTS
   i18n uc data io
 )
 
+find_package(Armadillo REQUIRED)
+
 # Define where include files live
 include_directories(
   ${PROJECT_SOURCE_DIR}
   ${Boost_INCLUDE_DIRS}
   ${ICU_INCLUDE_DIR}
+  ${ARMADILLO_INCLUDE_DIRS}
 )
 
 if (PREPROCESS_PATH)
@@ -49,7 +52,7 @@ file(GLOB dalign_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp)
 
 # Tool to score alignment between two sets of documents in the same language.
 add_executable(docalign docalign.cpp ${dalign_cpp_headers} ${dalign_cpp_cpp})
-target_link_libraries(docalign ${Boost_LIBRARIES} preprocess_util)
+target_link_libraries(docalign ${Boost_LIBRARIES} ${ARMADILLO_LIBRARIES} preprocess_util)
 
 # Tool to (left) join documents from two sets into a single TSV stream
 # Similar to coreutils join, but using line indices and works on gzipped files

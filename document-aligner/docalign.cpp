@@ -4,11 +4,13 @@
 #include <map>
 #include <unordered_map>
 #include <thread>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <vector>
 #include <cmath>
 #include <boost/program_options.hpp>
+#include <armadillo>
 #include "util/file_piece.hh"
 #include "src/document.h"
 #include "src/blocking_queue.h"
@@ -307,21 +309,29 @@ int main(int argc, char *argv[])
 			};
 		}
 
-		vector<thread> score_workers(start(n_score_threads, [&score_queue, &refs, &threshold, &mark_score]() {
+		arma::sp_fmat ref_matrix(numeric_limits<NGram>::max(), refs.size());
+		for (auto const &ref : refs)
+			ref_matrix.col(ref.id - 1) = ref.wordvec.as_col();
+
+		vector<thread> score_workers(start(n_score_threads, [&score_queue, &threshold, &mark_score, &refs, &ref_matrix]() {
 			while (true) {
 				unique_ptr<DocumentRef> doc_ref(score_queue.pop());
 
 				if (!doc_ref)
 					break;
 
-				for (auto const &ref : refs) {
-					float score = calculate_alignment(ref, *doc_ref);
+				cerr << "Multiplying " << arma::size(ref_matrix) << " by " << arma::size(doc_ref->wordvec.t()) << endl;
 
-					// Document not a match? Skip to the next.
-					if (score < threshold)
-						continue;
+				auto score_matrix_expr = ref_matrix * doc_ref->wordvec.t();
+				cerr << ">" << arma::size(score_matrix_expr) << endl;
 
-					mark_score(score, ref, *doc_ref);
+				break;
+
+				auto score_matrix = (ref_matrix * doc_ref->wordvec.t()).eval();
+
+				for (size_t row = 0; row < score_matrix.n_rows; ++row) {
+					if (score_matrix(row) >= threshold)
+						mark_score(score_matrix(row), refs[row], *doc_ref);
 				}
 			}
 		}));
