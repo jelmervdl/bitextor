@@ -65,6 +65,34 @@ void calculate_tfidf(Document const &document, DocumentRef &document_ref, size_t
 	total_tfidf_l2 = sqrt(total_tfidf_l2);
 	document_ref.wordvec /= total_tfidf_l2;
 }
+
+template <class It, class T> It lower_bound_interp(It it, It end, T const &val) {
+	// Assert that the value we search is inside our range
+	if (*prev(end) < val)
+		return end;
+
+	while (*it < val) {
+		// Assert it is smaller than our current end otherwise it is out of range or we overshot it.
+		// assert(*it < *prev(end));
+
+		size_t step_size = (*prev(end) - *it) / distance(it, end);
+		size_t dist = (val - *it) * step_size;
+		
+		// Note: dist can be 0. That's fine, we still move it or end
+		It pivot = it + dist;
+
+		// Assert we're still in our range and didn't do anything funny
+		// assert(pivot < end);
+		
+		if (*pivot < val)
+			it = next(pivot);
+		else if (val < *pivot)
+			end = prev(pivot);
+		else
+			it = pivot;
+	}
+
+	return it;
 }
 
 /**

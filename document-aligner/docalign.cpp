@@ -4,11 +4,13 @@
 #include <map>
 #include <unordered_map>
 #include <thread>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <vector>
 #include <cmath>
 #include <boost/program_options.hpp>
+#include <Eigen/Sparse>
 #include "util/file_piece.hh"
 #include "src/document.h"
 #include "src/blocking_queue.h"
@@ -307,21 +309,22 @@ int main(int argc, char *argv[])
 			};
 		}
 
-		vector<thread> score_workers(start(n_score_threads, [&score_queue, &refs, &threshold, &mark_score]() {
+		Eigen::SparseMatrix<float, Eigen::RowMajor, int64_t> ref_matrix(refs.size(), numeric_limits<NGram>::max());
+		for (auto const &ref : refs)
+			ref_matrix.row(ref.id - 1) = ref.wordvec;
+
+		vector<thread> score_workers(start(n_score_threads, [&score_queue, &threshold, &mark_score, &refs, &ref_matrix]() {
 			while (true) {
 				unique_ptr<DocumentRef> doc_ref(score_queue.pop());
 
 				if (!doc_ref)
 					break;
 
-				for (auto const &ref : refs) {
-					float score = calculate_alignment(ref, *doc_ref);
+				Eigen::SparseMatrix<float, Eigen::ColMajor, int64_t> score_matrix = (ref_matrix * doc_ref->wordvec).eval();
 
-					// Document not a match? Skip to the next.
-					if (score < threshold)
-						continue;
-
-					mark_score(score, ref, *doc_ref);
+				for (size_t row = 0; row < score_matrix.rows(); ++row) {
+					if (score_matrix.coeff(row,1) >= threshold)
+						mark_score(score_matrix.coeff(row,1), refs[row], *doc_ref);
 				}
 			}
 		}));

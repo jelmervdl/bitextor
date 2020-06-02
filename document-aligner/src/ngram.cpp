@@ -1,9 +1,15 @@
 #include "ngram.h"
-#include "murmur_hash.h"
+#include "MurmurHash3.h"
 #include <sstream>
 #include <iostream>
 
 using namespace std;
+
+namespace {
+	inline uint32_t MurmurHashCombine(uint32_t left, uint32_t right) {
+		return left ^ (right + 0x9e3779b9 + (left<<6) + (left>>2));
+	}
+}
 
 namespace bitextor {
 
@@ -22,7 +28,7 @@ NGramIter::NGramIter(StringPiece const &source, size_t ngram_size)
 
 void NGramIter::init() {
 	for (pos_ = 0; pos_ < ngram_size_ - 1 && token_it_; ++pos_, ++token_it_)
-		buffer_[pos_] = MurmurHashNative(token_it_->data(), token_it_->size(), 0);
+		MurmurHash3_x86_32(token_it_->data(), token_it_->size(), 0, &buffer_[pos_]);
 	
 	// Some documents are just too short
 	if (!token_it_)
@@ -38,7 +44,7 @@ void NGramIter::increment() {
 	}
 	
 	// Read next word & store hash
-	buffer_[pos_ % ngram_size_] = MurmurHashNative(token_it_->data(), token_it_->size(), 0);
+	MurmurHash3_x86_32(token_it_->data(), token_it_->size(), 0, &buffer_[pos_ % ngram_size_]);
 	
 	// Create hash from combining past N word hashes
 	ngram_hash_ = 0;

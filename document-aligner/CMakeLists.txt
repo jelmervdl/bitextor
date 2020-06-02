@@ -6,7 +6,7 @@ project(document-aligner)
 enable_testing()
 
 set(CMAKE_CXX_STANDARD 11)
-set(CMAKE_CXX_FLAGS "-Wall")
+set(CMAKE_CXX_FLAGS "-Wall -march=native")
 set(CMAKE_CXX_FLAGS_RELEASE "-Ofast")
 set(CMAKE_CXX_FLAGS_DEBUG "-Wextra -g")
 
@@ -26,6 +26,8 @@ find_package(Boost 1.41.0 REQUIRED COMPONENTS
 find_package(ICU REQUIRED COMPONENTS
   i18n uc data io
 )
+
+find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 
 # Define where include files live
 include_directories(
@@ -49,7 +51,7 @@ file(GLOB dalign_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp)
 
 # Tool to score alignment between two sets of documents in the same language.
 add_executable(docalign docalign.cpp ${dalign_cpp_headers} ${dalign_cpp_cpp})
-target_link_libraries(docalign ${Boost_LIBRARIES} preprocess_util)
+target_link_libraries(docalign ${Boost_LIBRARIES} Eigen3::Eigen preprocess_util)
 
 # Tool to (left) join documents from two sets into a single TSV stream
 # Similar to coreutils join, but using line indices and works on gzipped files

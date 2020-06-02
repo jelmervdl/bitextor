@@ -1,10 +1,10 @@
 #pragma once
 #include "util/string_piece.hh"
 #include "ngram.h"
-#include "sparsevector.h"
-#include <istream>
+#include <Eigen/Sparse>
+// #include "sparsevector.h"
+#include <limits>
 #include <unordered_map>
-#include <vector>
 
 namespace bitextor {
 
@@ -21,7 +21,12 @@ struct DocumentRef {
 	size_t id;
 	
 	// ngram scores as a sorted array for quick sparse dot product
-	SparseVector<float, NGram> wordvec;
+	Eigen::SparseVector<float, 0, int64_t> wordvec;
+	// SparseVector<float, NGram> wordvec;
+
+	DocumentRef() : wordvec(std::numeric_limits<NGram>::max()) {
+		//
+	}
 };
 
 // Assumes base64 encoded still.
