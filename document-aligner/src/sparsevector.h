@@ -80,9 +80,56 @@ public:
 	}
 
 	/**
-	 * Dot-product of two sparse matrices.
+	 * Dot-product of two sparse vectors.
 	 */
 	Scalar dot(SparseVector<Scalar,Index> const &right) const {
+		// Special case: empty vector means 0.
+		if (size() == 0)
+			return 0;
+
+		// Assume the right vector is always the larger one
+		if (size() > right.size())
+			return right.dot(*this);
+
+		// Special case: if the larger vector is much larger than this, use
+		// binary search to find the intersection between the two.
+		if (right.size() / size() > 10)
+			return dot_search(right);
+		
+		// Otherwise just use the naive but simple & speedy intersection
+		return dot_naive(right);
+	}
+
+	/**
+	 * dot-product for when right vector is much larger than this vector.
+	 */
+	Scalar dot_search(SparseVector<Scalar,Index> const &right) const {
+		Scalar sum = 0;
+	
+		auto liit = indices_.cbegin(),
+			 riit = right.indices_.cbegin(),
+			 lend = indices_.cend(),
+			 rend = right.indices_.cend();
+
+		while (liit != lend && riit != rend) {
+			if (*liit < *riit){
+				++liit;
+			} else if (*riit < *liit) {
+				riit = std::lower_bound(riit, rend, *liit);
+			} else {
+				sum += values_[std::distance(indices_.cbegin(), liit)] * right.values_[std::distance(right.indices_.cbegin(), riit)];
+				++liit;
+				riit = std::lower_bound(riit, rend, *liit);
+			}
+		}
+
+		return sum;
+	}
+
+	/**
+	 * dot-product for when both vectors are more or less the same size.
+	 */
+	Scalar dot_naive(SparseVector<Scalar,Index> const &right) const {
 		Scalar sum = 0;
 	
 		auto liit = indices_.cbegin(),

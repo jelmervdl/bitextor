@@ -65,7 +65,6 @@ void calculate_tfidf(Document const &document, DocumentRef &document_ref, size_t
 	total_tfidf_l2 = sqrt(total_tfidf_l2);
 	document_ref.wordvec /= total_tfidf_l2;
 }
-}
 
 /**
  * Dot product of two documents (of their ngram frequency really)
