@@ -44,7 +44,7 @@ public:
 	}
 
 	size_t size() const {
-		return indices_.size();
+		return values_.size();
 	}
 
 	void reserve(size_t capacity) {
@@ -82,7 +82,7 @@ public:
 	/**
 	 * Dot-product of two sparse vectors.
 	 */
-	Scalar dot(SparseVector<Scalar,Index> const &right) const {
+	Scalar dot_auto(SparseVector<Scalar,Index> const &right) const {
 		// Special case: empty vector means 0.
 		if (size() == 0)
 			return 0;
@@ -98,6 +98,76 @@ public:
 		
 		// Otherwise just use the naive but simple & speedy intersection
 		return dot_naive(right);
+	}
+
+	Scalar dot(SparseVector<Scalar,Index> const &right) const {
+		// Assert there is at least something to compare
+		if (size() == 0 || right.size() == 0)
+			return 0;
+
+		// Make sure our data is nicely chopable in pieces of 4.
+		size_t left_padding = (4 - indices_.size() % 4) % 4;
+		indices_.resize(indices_.size() + left_padding, ULLONG_MAX);
+
+		size_t right_padding = (4 - right.indices_.size() % 4) % 4;
+		right.indices_.resize(right.indices_.size() + right_padding, ULLONG_MAX);
+
+		auto liit = indices_.data(),
+		     lend = indices_.data() + indices_.size() - left_padding,
+		     riit = right.indices_.data(),
+		     rend = right.indices_.data() + right.indices_.size() - right_padding;
+
+		auto lvit  = values_.data(),
+			 rvit  = right.values_.data();
+
+		float sum = 0;
+
+		__m512i in, out;
+		uint64_t buf[8];
+
+		while (liit < lend && riit < rend) {
+			// get a chunk of the left & right ngrams in a registry. Left goes in
+			// the first four bytes, right in the last four.
+			in = _mm512_mask_loadu_epi64(in, 0x0F, liit);
+			in = _mm512_mask_loadu_epi64(in, 0xF0, riit - 4); // minus 4 because we want bytes 1-4 at the place of 5-8 (see the 0xF0 mask)
+
+			// Count conflicts. Should only occur in the last four bytes at most
+			// since left and right are internally already unique. Conflicts can
+			// only occur between the two, not within.
+			out = _mm512_conflict_epi64(in);
+
+			// Fetch those bytes from the register
+			// TODO: Can we replace this call and the following one with
+			// _gather_ plus mask_mul_ somehow?
+			_mm512_store_epi64(buf, out);
+
+			// Look at the four bytes and see for each of them whether they say
+			// that the value occurred before. I.e. If the value is 8, it was
+			// the third doc that is the same. Hence __builtin_ctz (effectively log2).
+			for (size_t j = 0; j < 4; ++j) {
+				if (buf[4+j])
+					sum += lvit[__builtin_ctz(buf[4+j])] * *rvit[j];
+			}
+
+			// Look at the last word we compared. Is left or right the furthest
+			// along in this race? Then take the next chunk for the one that
+			// needs to catch up. If we're doing equally well we can just jump
+			// ahead on both.
+			if (liit[3] < riit[3]) {
+				liit += 4;
+				lvit += 4;
+			} else if (riit[3] < liit[3]) {
+				riit += 4;
+				rvit += 4;
+			} else {
+				liit += 4;
+				lvit += 4;
+				riit += 4;
+				rvit += 4;
+			}
+		}
+
+		return sum;
 	}
 
 	/**
@@ -160,7 +230,7 @@ public:
 	}
 private:
 	Scalar fill_;
-	std::vector<Index> indices_;
+	mutable std::vector<Index> indices_; // mutable because may need to be padded
 	std::vector<Scalar> values_;
 };
 
