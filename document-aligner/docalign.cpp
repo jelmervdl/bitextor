@@ -152,7 +152,7 @@ int main(int argc, char *argv[])
 
 	unsigned int n_load_threads = n_threads;
 
-	unsigned int n_read_threads = min(n_threads, min(max(n_threads / 4u, 1u), 4u)); // really no use to have more than 4 threads decode
+	unsigned int n_read_threads = min(n_threads, min(max(n_threads / 4u, 1u), 8u)); // really no use to have more than 8 threads decode
 
 	unsigned int n_score_threads = n_threads;
 	
