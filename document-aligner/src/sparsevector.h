@@ -102,7 +102,7 @@ public:
 		return dot_naive(right);
 	}
 
-	__attribute__((__target__("avx512cd"), __min_vector_width__(512)))
+	__attribute__((__target__("avx512cd")))
 	Scalar dot_avx512(SparseVector<Scalar,Index> const &right) const {
 		// Assert there is at least something to compare
 		if (size() == 0 || right.size() == 0)
