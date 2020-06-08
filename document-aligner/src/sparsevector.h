@@ -1,7 +1,9 @@
 #pragma once
 #include <algorithm>
+#include <climits>
 #include <vector>
 #include <iterator>
+#include <immintrin.h>
 
 namespace bitextor {
 
@@ -146,7 +148,7 @@ public:
 			// the third doc that is the same. Hence __builtin_ctz (effectively log2).
 			for (size_t j = 0; j < 4; ++j) {
 				if (buf[4+j])
-					sum += lvit[__builtin_ctz(buf[4+j])] * *rvit[j];
+					sum += lvit[__builtin_ctz(buf[4+j])] * rvit[j];
 			}
 
 			// Look at the last word we compared. Is left or right the furthest
