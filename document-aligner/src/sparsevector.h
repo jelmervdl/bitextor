@@ -84,7 +84,7 @@ public:
 	/**
 	 * Dot-product of two sparse vectors.
 	 */
-	Scalar dot_auto(SparseVector<Scalar,Index> const &right) const {
+	Scalar dot(SparseVector<Scalar,Index> const &right) const {
 		// Special case: empty vector means 0.
 		if (size() == 0)
 			return 0;
@@ -102,7 +102,8 @@ public:
 		return dot_naive(right);
 	}
 
-	Scalar dot(SparseVector<Scalar,Index> const &right) const {
+	__attribute__((__target__("avx512cd"), __min_vector_width__(512)))
+	Scalar dot_avx512(SparseVector<Scalar,Index> const &right) const {
 		// Assert there is at least something to compare
 		if (size() == 0 || right.size() == 0)
 			return 0;

@@ -30,6 +30,8 @@ struct DocumentPair {
 	size_t en_idx;
 };
 
+typedef float (SparseVector<float,NGram>::*DotFun)(SparseVector<float,NGram> const &) const;
+
 /**
  * Utility to start N threads executing fun. Returns a vector with those thread objects.
  */
@@ -106,6 +108,14 @@ int main(int argc, char *argv[])
 	bool verbose = false;
 
 	bool print_all = false;
+
+	string dot_impl_name;
+	unordered_map<string,DotFun> dot_implementations{
+		{"auto", &SparseVector<float,NGram>::dot},
+		{"naive", &SparseVector<float,NGram>::dot_naive},
+		{"search", &SparseVector<float,NGram>::dot_search},
+		{"avx512", &SparseVector<float,NGram>::dot_avx512}
+	};
 	
 	po::positional_options_description arg_desc;
 	arg_desc.add("translated-tokens", 1);
@@ -121,6 +131,7 @@ int main(int argc, char *argv[])
 		("min_count", po::value<size_t>(&min_ngram_cnt), "minimal number of documents an ngram can appear in to be included in DF (default: 2)")
 		("max_count", po::value<size_t>(&max_ngram_cnt), "maximum number of documents for ngram to to appear in (default: 1000)")
 		("all", po::bool_switch(&print_all), "print all scores, not only the best pairs")
+		("dot-impl", po::value<string>(&dot_impl_name), "dot-product implementation: auto, naive, search or avx512 (default: auto)")
 		("verbose,v", po::bool_switch(&verbose), "show additional output");
 	
 	po::options_description hidden_desc("Hidden options");
@@ -146,6 +157,17 @@ int main(int argc, char *argv[])
 		     << " TRANSLATED-TOKENS ENGLISH-TOKENS\n\n"
 		     << generic_desc << endl;
 		return 1;
+	}
+
+	DotFun dot_impl;
+	{
+		auto it = dot_implementations.find(dot_impl_name);
+		if (it == dot_implementations.end()) {
+			cerr << "Error: Unknown dot implementation specified." << endl;
+			return 1;
+		} else {
+			dot_impl = it->second;
+		}
 	}
 
 	unsigned int n_sample_threads = n_threads;
@@ -307,7 +329,7 @@ int main(int argc, char *argv[])
 			};
 		}
 
-		vector<thread> score_workers(start(n_score_threads, [&score_queue, &refs, &threshold, &mark_score]() {
+		vector<thread> score_workers(start(n_score_threads, [&score_queue, &refs, &threshold, &mark_score, dot_impl]() {
 			while (true) {
 				unique_ptr<DocumentRef> doc_ref(score_queue.pop());
 
@@ -315,7 +337,7 @@ int main(int argc, char *argv[])
 					break;
 
 				for (auto const &ref : refs) {
-					float score = calculate_alignment(ref, *doc_ref);
+					float score = ((ref.wordvec).*(dot_impl))(doc_ref->wordvec);
 
 					// Document not a match? Skip to the next.
 					if (score < threshold)
