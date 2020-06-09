@@ -157,8 +157,9 @@ public:
 			// that the value occurred before. I.e. If the value is 8, it was
 			// the third doc that is the same. Hence __builtin_ctz (effectively log2).
 			for (size_t j = 0; j < 4; ++j) {
-				if (buf[4+j])
-					sum += lvit[__builtin_ctz(buf[4+j])] * rvit[j];
+				size_t i = __builtin_ctz(buf[4+j]);
+				if (buf[4+j] && liit + i < lend && riit + j < rend) // TODO slow?
+					sum += lvit[i] * rvit[j];
 			}
 
 			// Look at the last word we compared. Is left or right the furthest
