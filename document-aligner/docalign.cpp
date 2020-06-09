@@ -114,7 +114,8 @@ int main(int argc, char *argv[])
 		{"auto", &SparseVector<float,NGram>::dot},
 		{"naive", &SparseVector<float,NGram>::dot_naive},
 		{"search", &SparseVector<float,NGram>::dot_search},
-		{"avx512", &SparseVector<float,NGram>::dot_avx512}
+		{"avx512", &SparseVector<float,NGram>::dot_avx512},
+		{"verify-avx512", &SparseVector<float,NGram>::dot_verify_avx512}
 	};
 	
 	po::positional_options_description arg_desc;

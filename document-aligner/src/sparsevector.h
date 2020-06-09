@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <climits>
+#include <cmath>
 #include <vector>
 #include <iterator>
 #include <immintrin.h>
@@ -100,6 +101,14 @@ public:
 		
 		// Otherwise just use the naive but simple & speedy intersection
 		return dot_naive(right);
+	}
+
+	/**
+	 * Just for testing: returns the difference between avx512 and naive impl
+	 * to find bugs.
+	 */
+	Scalar dot_verify_avx512(SparseVector<Scalar,Index> const &right) const {
+		return abs(dot_naive(right) - dot_avx512(right));
 	}
 
 	__attribute__((__target__("avx512cd")))
