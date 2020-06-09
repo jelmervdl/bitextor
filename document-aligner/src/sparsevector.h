@@ -28,21 +28,21 @@ public:
 	}
 
 	Scalar &operator[](Index const &index) {
-		auto it = std::lower_bound(indices_.begin(), indices_.end(), index);
-		if (it == indices_.end() || *it != index) {
+		auto it = std::lower_bound(begin(), end(), index);
+		if (it == end() || *it != index) {
 			indices_.insert(it, index);
-			return *values_.emplace(values_.begin() + std::distance(indices_.begin(), it), fill_);
+			return *values_.emplace(values_.begin() + std::distance(begin(), it), fill_);
 		} else {
-			return *(values_.begin() + std::distance(indices_.begin(), it));
+			return *(values_.begin() + std::distance(begin(), it));
 		}
 	}
 
 	Scalar const &operator[](Index const &index) const {
-		auto it = std::lower_bound(indices_.begin(), indices_.end(), index);
-		if (it == indices_.end() || *it != index) {
+		auto it = std::lower_bound(begin(), end(), index);
+		if (it == end() || *it != index) {
 			return fill_;
 		} else {
-			return *(values_.begin() + std::distance(indices_.begin(), it));
+			return *(values_.begin() + std::distance(begin(), it));
 		}
 	}
 
@@ -51,7 +51,7 @@ public:
 	}
 
 	void reserve(size_t capacity) {
-		indices_.reserve(capacity);
+		indices_.reserve(capacity + (4 - capacity % 4) % 4);
 		values_.reserve(capacity);
 	}
 
@@ -65,15 +65,15 @@ public:
 	}
 
 	iterator end() {
-		return indices_.end();
+		return indices_.begin() + size();
 	}
 
-	const_iterator cbegin() {
+	const_iterator cbegin() const {
 		return indices_.cbegin();
 	}
 
-	const_iterator cend() {
-		return indices_.cend();
+	const_iterator cend() const {
+		return indices_.cbegin() + size();
 	}
 
 	template <class T> SparseVector &operator/=(T deliminator) {
@@ -125,9 +125,9 @@ public:
 		right.indices_.resize(right.indices_.size() + right_padding, ULLONG_MAX);
 
 		auto liit = indices_.data(),
-		     lend = indices_.data() + indices_.size() - left_padding,
+		     lend = indices_.data() + size(),
 		     riit = right.indices_.data(),
-		     rend = right.indices_.data() + right.indices_.size() - right_padding;
+		     rend = right.indices_.data() + right.size();
 
 		auto lvit  = values_.data(),
 			 rvit  = right.values_.data();
@@ -189,10 +189,10 @@ public:
 	Scalar dot_search(SparseVector<Scalar,Index> const &right) const {
 		Scalar sum = 0;
 	
-		auto liit = indices_.cbegin(),
-			 riit = right.indices_.cbegin(),
-			 lend = indices_.cend(),
-			 rend = right.indices_.cend();
+		auto liit = cbegin(),
+			 riit = right.cbegin(),
+			 lend = cend(),
+			 rend = right.cend();
 
 		while (liit != lend && riit != rend) {
 			if (*liit < *riit){
@@ -200,7 +200,7 @@ public:
 			} else if (*riit < *liit) {
 				riit = std::lower_bound(riit, rend, *liit);
 			} else {
-				sum += values_[std::distance(indices_.cbegin(), liit)] * right.values_[std::distance(right.indices_.cbegin(), riit)];
+				sum += values_[std::distance(cbegin(), liit)] * right.values_[std::distance(right.cbegin(), riit)];
 				++liit;
 				riit = std::lower_bound(riit, rend, *liit);
 			}
@@ -215,10 +215,10 @@ public:
 	Scalar dot_naive(SparseVector<Scalar,Index> const &right) const {
 		Scalar sum = 0;
 	
-		auto liit = indices_.cbegin(),
-			 riit = right.indices_.cbegin(),
-			 lend = indices_.cend(),
-			 rend = right.indices_.cend();
+		auto liit = cbegin(),
+			 riit = right.cbegin(),
+			 lend = cend(),
+			 rend = right.cend();
 
 		auto lvit = values_.cbegin(),
 			 rvit = right.values_.cbegin();
