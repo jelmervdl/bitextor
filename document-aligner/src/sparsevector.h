@@ -111,7 +111,7 @@ public:
 		return abs(dot_naive(right) - dot_avx512(right));
 	}
 
-	__attribute__((__target__("avx512cd")))
+	__attribute__((__target__("avx512cd,avx512vl")))
 	Scalar dot_avx512(SparseVector<Scalar,Index> const &right) const {
 		// Assert there is at least something to compare
 		if (size() == 0 || right.size() == 0)
@@ -134,8 +134,7 @@ public:
 
 		float sum = 0;
 
-		__m512i in, out;
-		uint64_t buf[8];
+		__m512i in;
 
 		while (liit < lend && riit < rend) {
 			// get a chunk of the left & right ngrams in a registry. Left goes in
@@ -146,21 +145,52 @@ public:
 			// Count conflicts. Should only occur in the last four bytes at most
 			// since left and right are internally already unique. Conflicts can
 			// only occur between the two, not within.
-			out = _mm512_conflict_epi64(in);
+			__m512i conflicts = _mm512_conflict_epi64(in);
 
-			// Fetch those bytes from the register
-			// TODO: Can we replace this call and the following one with
-			// _gather_ plus mask_mul_ somehow?
-			_mm512_store_epi64(buf, out);
+			// Now for each of those conflicts figure out what they are conflicting
+			// with between left and right. This will give us indices.
+			__m512i all_offsets = _mm512_sub_epi64(_mm512_set1_epi64(63), _mm512_lzcnt_epi64(conflicts));
 
-			// Look at the four bytes and see for each of them whether they say
-			// that the value occurred before. I.e. If the value is 8, it was
-			// the third doc that is the same. Hence __builtin_ctz (effectively log2).
-			for (size_t j = 0; j < 4; ++j) {
-				size_t i = __builtin_ctz(buf[4+j]);
-				if (buf[4+j] && liit + i < lend && riit + j < rend) // TODO slow?
-					sum += lvit[i] * rvit[j];
-			}
+			// We only need the last four positions. There can only be conflicts
+			// between the first four and last four.
+			__m256i offsets = _mm512_extracti64x4_epi64(all_offsets, 1);
+
+			// Figure out which offsets are bogus because there was no conflict.
+			__mmask8 hits = _mm256_cmpneq_epi64_mask(offsets, _mm256_set1_epi64x(-1));
+
+			// Mask out the conflicts that were caused by padding matching other
+			// padding or internal padding.
+			auto valid = std::min(lend - liit - left_padding, rend - riit - right_padding);
+			hits &= 0b1111 >> (4 - std::min(valid, 4UL));
+			// switch (valid) {
+			// 	case 1:  hits &= 0b0001; break;
+			// 	case 2:  hits &= 0b0011; break;
+			// 	case 3:  hits &= 0b0111; break;
+			// 	default: hits &= 0b1111; break;
+			// }
+
+			// Gather the values from left (based on the offsets) and put them in 
+			// the vector at the positions according to hits. Everything else will
+			// be 0. Important!
+			__m128 vals_lft = _mm256_mmask_i64gather_ps(_mm_set1_ps(0), hits, offsets, lvit, 4);
+
+			// alternative: _mm256_i64gather_ps(float const* base_addr, __m256i vindex, const int scale);
+			// after setting invalid offsets to 0. Then using the masks to set
+			// all vals_lft not covered by hits to 0 to let them disappear in
+			// the dot product.
+			
+			// Indiscriminately load in right values. The 0s in left will cause the
+			// values we don't need to turn to 0 in the product.
+			__m128 vals_rgt = _mm_loadu_ps(rvit);
+			
+			// Dot product. Done.
+			__m128 dot_prod = _mm_dp_ps(vals_lft, vals_rgt, 0b11111111);
+
+			// Load in the output of the dot product (float broadcasted to all
+			// four positions in the vector) and pick one to add to our sum.
+			float dot_prod_buf[4];
+			_mm_store_ps(dot_prod_buf, dot_prod);
+			sum += dot_prod_buf[0];
 
 			// Look at the last word we compared. Is left or right the furthest
 			// along in this race? Then take the next chunk for the one that
