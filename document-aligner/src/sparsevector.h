@@ -156,28 +156,35 @@ public:
 			__m256i offsets = _mm512_extracti64x4_epi64(all_offsets, 1);
 
 			// Figure out which offsets are bogus because there was no conflict.
-			__mmask8 hits = _mm256_cmpneq_epi64_mask(offsets, _mm256_set1_epi64x(-1));
+			__m256i mask = _mm256_cmpeq_epi64(offsets, _mm256_set1_epi64x(-1));
+			__m256i hits = _mm256_xor_si256(mask, _mm256_set1_epi64x(-1));
 
 			// Mask out the conflicts that were caused by padding matching other
 			// padding or internal padding.
 			auto valid = std::min(lend - liit - left_padding, rend - riit - right_padding);
-			hits &= 0b1111 >> (4 - std::min(valid, 4UL));
-			// switch (valid) {
-			// 	case 1:  hits &= 0b0001; break;
-			// 	case 2:  hits &= 0b0011; break;
-			// 	case 3:  hits &= 0b0111; break;
-			// 	default: hits &= 0b1111; break;
-			// }
+			hits = _mm256_and_si256(hits, _mm256_set_epi64x(
+				valid > 3 ? -1 : 0,
+				valid > 2 ? -1 : 0,
+				valid > 1 ? -1 : 0,
+				valid > 0 ? -1 : 0));
 
+			// Hits is __m256i of four 0xFF or 0x00 uint64_t's. I need uint32_t.
+			// for the _mm_blendv_ps. Use permute to cast our 64 bits to 32.
+			__m128 hits_i32 = _mm256_extractf128_ps(_mm256_permutevar8x32_epi32(hits, _mm256_set_epi32(7, 5, 3, 1, 6, 4, 2, 0)), 0);
+
+			// Mask out the offsets that are not going to be used so we don't gather
+			// from infinitely far away, but just from the base offset.
+			offsets = _mm256_and_si256(offsets, hits);
+			
 			// Gather the values from left (based on the offsets) and put them in 
-			// the vector at the positions according to hits. Everything else will
-			// be 0. Important!
-			__m128 vals_lft = _mm256_mmask_i64gather_ps(_mm_set1_ps(0), hits, offsets, lvit, 4);
+			// the vector at the positions according to hits. We will be gathering
+			// a bit too much but later on set the indices that are not in hits 
+			// to 0.
+			__m128 vals_lft = _mm256_i64gather_ps(lvit, offsets, 4);
 
-			// alternative: _mm256_i64gather_ps(float const* base_addr, __m256i vindex, const int scale);
-			// after setting invalid offsets to 0. Then using the masks to set
-			// all vals_lft not covered by hits to 0 to let them disappear in
-			// the dot product.
+			// Mask out the values that cannot be hits, i.e. make them 0.
+			// vals_lft = _mm_blendv_ps(_mm_setzero_ps(), vals_lft, hits_i32);
+			vals_lft = _mm_and_ps(vals_lft, hits_i32);
 			
 			// Indiscriminately load in right values. The 0s in left will cause the
 			// values we don't need to turn to 0 in the product.
@@ -186,7 +193,7 @@ public:
 			// Dot product. Done.
 			__m128 dot_prod = _mm_dp_ps(vals_lft, vals_rgt, 0b11111111);
 
-			// Load in the output of the dot product (float broadcasted to all
+			// Load in the output of the dot product (float broadcast to all
 			// four positions in the vector) and pick one to add to our sum.
 			float dot_prod_buf[4];
 			_mm_store_ps(dot_prod_buf, dot_prod);
