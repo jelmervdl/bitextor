@@ -170,7 +170,12 @@ public:
 
 			// Hits is __m256i of four 0xFF or 0x00 uint64_t's. I need uint32_t.
 			// for the _mm_blendv_ps. Use permute to cast our 64 bits to 32.
-			__m128 hits_i32 = _mm256_extractf128_ps(_mm256_permutevar8x32_epi32(hits, _mm256_set_epi32(7, 5, 3, 1, 6, 4, 2, 0)), 0);
+			__m128 hits_i32 = _mm256_extractf128_ps(
+				_mm256_castsi256_ps(
+					_mm256_permutevar8x32_epi32(
+						hits,
+						_mm256_set_epi32(7, 5, 3, 1, 6, 4, 2, 0))
+				), 0);
 
 			// Mask out the offsets that are not going to be used so we don't gather
 			// from infinitely far away, but just from the base offset.
