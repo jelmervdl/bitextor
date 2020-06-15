@@ -262,6 +262,13 @@ int main(int argc, char *argv[])
 			cerr << "Load queue performance:\n" << queue.performance();
 	}
 
+	// Build an index
+	// TODO no duplicate work
+	unordered_map<NGram, vector<pair<uint64_t,float>>> ref_index;
+	for (auto const &ref : refs)
+		for (auto const &entry : ref.wordvec)
+			ref_index[entry.first].emplace_back(ref.id, entry.second);
+
 	// Start reading the other set of documents we match against and do the matching.
 	{
 		blocking_queue<unique_ptr<Line>> read_queue(n_read_threads * 128);
@@ -289,40 +296,46 @@ int main(int argc, char *argv[])
 		// Function used to report the score. Implementation depends on whether
 		// we are doing print_all or not. Mutex is necessary for both cases,
 		// either for writing to top_scores or for printing to stdout.
-		function<void (float, DocumentRef const &, DocumentRef const &)> mark_score;
+		function<void (float, uint64_t in_ref, uint64_t en_ref)> mark_score;
 		mutex mark_score_mutex;
 
 		// Scores for all pairs (that meet the threshold). Only used with 
 		vector<DocumentPair> scored_pairs;
 
 		if (!print_all) {
-			mark_score = [&scored_pairs, &mark_score_mutex] (float score, DocumentRef const &in_ref, DocumentRef const &en_ref) {
+			mark_score = [&scored_pairs, &mark_score_mutex] (float score, uint64_t in_ref, uint64_t en_ref) {
 				unique_lock<mutex> lock(mark_score_mutex);
-				scored_pairs.push_back({score, in_ref.id, en_ref.id});
+				scored_pairs.push_back({score, in_ref, en_ref});
 			};
 		} else {
-			mark_score = [&mark_score_mutex](float score, DocumentRef const &in_ref, DocumentRef const &en_ref) {
+			mark_score = [&mark_score_mutex](float score, uint64_t in_ref, uint64_t en_ref) {
 				unique_lock<mutex> lock(mark_score_mutex);
-				print_score(score, in_ref.id, en_ref.id);
+				print_score(score, in_ref, en_ref);
 			};
 		}
 
-		vector<thread> score_workers(start(n_score_threads, [&score_queue, &refs, &threshold, &mark_score]() {
+		vector<thread> score_workers(start(n_score_threads, [&score_queue, &ref_index, &threshold, &mark_score]() {
 			while (true) {
 				unique_ptr<DocumentRef> doc_ref(score_queue.pop());
 
 				if (!doc_ref)
 					break;
 
-				for (auto const &ref : refs) {
-					float score = calculate_alignment(ref, *doc_ref);
+				unordered_map<size_t, float> ref_scores;
 
-					// Document not a match? Skip to the next.
-					if (score < threshold)
+				for (auto const &ngram : doc_ref->wordvec) {
+					auto it = ref_index.find(ngram.first);
+					
+					if (it == ref_index.end())
 						continue;
-
-					mark_score(score, ref, *doc_ref);
+					
+					for (auto const &ref_ngram : it->second)
+						ref_scores[ref_ngram.first] += ngram.second * ref_ngram.second;
 				}
+
+				for (auto const &ref : ref_scores)
+					if (ref.second >= threshold)
+						mark_score(ref.second, ref.first, doc_ref->id);
 			}
 		}));
 

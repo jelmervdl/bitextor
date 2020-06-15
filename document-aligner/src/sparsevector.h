@@ -6,12 +6,45 @@
 namespace bitextor {
 
 template <class Scalar, class Index = uint64_t> class SparseVector {
+private:
+	class iterator_impl
+	{
+	private:
+		typename std::vector<Index>::const_iterator index_it_;
+		typename std::vector<Scalar>::const_iterator value_it_;
+	public:
+		typedef std::pair<Index,Scalar> value_type;
+		typedef std::ptrdiff_t          difference_type;
+		typedef std::input_iterator_tag iterator_category;
+
+		iterator_impl(typename std::vector<Index>::const_iterator index_it,
+			          typename std::vector<Scalar>::const_iterator value_it)
+		: index_it_(index_it), value_it_(value_it) {
+			//
+		}
+		
+		bool operator==(iterator_impl const & other) const {
+			return index_it_ == other.index_it_;
+		}
+
+		bool operator!=(iterator_impl const & other) const {
+			return !(*this == other);
+		}
+		
+		value_type operator*() const {
+			return std::make_pair(*index_it_, *value_it_);
+		}
+		
+		iterator_impl& operator++() {
+			++index_it_;
+			return *this;
+		}
+	};
+
 public:
 	typedef Scalar value_type;
 
-	typedef typename std::vector<Index>::iterator iterator;
-
-	typedef typename std::vector<Index>::const_iterator const_iterator;
+	typedef iterator_impl const_iterator;
 
 	SparseVector() : fill_(0) {
 		//
@@ -57,26 +90,24 @@ public:
 		values_.clear();
 	}
 
-	iterator begin() {
-		return indices_.begin();
+	const_iterator begin() const {
+		return iterator_impl(indices_.cbegin(), values_.cbegin());
 	}
 
-	iterator end() {
-		return indices_.end();
-	}
-
-	const_iterator cbegin() {
-		return indices_.cbegin();
-	}
-
-	const_iterator cend() {
-		return indices_.cend();
+	const_iterator end() const {
+		return iterator_impl(indices_.cend(), values_.cend());
 	}
 
 	template <class T> SparseVector &operator/=(T deliminator) {
 		for (auto &value : values_)
 			value /= deliminator;
 		return *this;
+	}
+
+	void forEach(void (*proc)(Scalar const &, Index const &)) {
+		auto val_it = values_.begin();
+		for (auto const &idx : indices_)
+			proc(idx, *val_it++);
 	}
 
 	/**
