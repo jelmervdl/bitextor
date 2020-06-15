@@ -104,12 +104,6 @@ public:
 		return *this;
 	}
 
-	void forEach(void (*proc)(Scalar const &, Index const &)) {
-		auto val_it = values_.begin();
-		for (auto const &idx : indices_)
-			proc(idx, *val_it++);
-	}
-
 	/**
 	 * Dot-product of two sparse vectors.
 	 */
