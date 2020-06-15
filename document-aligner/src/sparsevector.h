@@ -19,7 +19,8 @@ private:
 
 		iterator_impl(typename std::vector<Index>::const_iterator index_it,
 			          typename std::vector<Scalar>::const_iterator value_it)
-		: index_it_(index_it), value_it_(value_it) {
+		: index_it_(index_it),
+		  value_it_(value_it) {
 			//
 		}
 		
@@ -37,6 +38,7 @@ private:
 		
 		iterator_impl& operator++() {
 			++index_it_;
+			++value_it_;
 			return *this;
 		}
 	};
