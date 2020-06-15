@@ -30,6 +30,11 @@ struct DocumentPair {
 	size_t en_idx;
 };
 
+struct DocumentNGramScore {
+	size_t doc_id;
+	float score;
+};
+
 /**
  * Utility to start N threads executing fun. Returns a vector with those thread objects.
  */
@@ -229,11 +234,15 @@ int main(int argc, char *argv[])
 	}
 
 	// Read translated documents & pre-calculate TF/DF for each of these documents
-	std::vector<DocumentRef> refs(in_document_cnt);
-
+	unordered_map<NGram, vector<DocumentNGramScore>> ref_index;
+	
 	{
+		mutex ref_index_mutex;
+
 		blocking_queue<unique_ptr<Line>> queue(n_load_threads * 128);
-		vector<thread> workers(start(n_load_threads, [&queue, &refs, &df, &document_cnt, &ngram_size]() {
+		vector<thread> workers(start(n_load_threads, [&queue, &ref_index, &ref_index_mutex, &df, &document_cnt, &ngram_size]() {
+			unordered_map<NGram, vector<DocumentNGramScore>> local_ref_index;
+
 			while (true) {
 				unique_ptr<Line> line(queue.pop());
 
@@ -247,7 +256,31 @@ int main(int argc, char *argv[])
 				// vector and the vector has been initialized with enough lines
 				// so there should be no concurrency issue.
 				// DF is accessed read-only. N starts counting at 1.
-				calculate_tfidf(doc, refs[line->n - 1], document_cnt, df);
+				DocumentRef ref;
+				calculate_tfidf(doc, ref, document_cnt, df);
+
+				for (auto const &entry : ref.wordvec) {
+					local_ref_index[entry.first].push_back(DocumentNGramScore{
+						.doc_id = line->n,
+						.score = entry.second
+					});
+				}
+			}
+
+			{
+				// Merge the local index we built into the global one
+				unique_lock<mutex> lock(ref_index_mutex);
+				for (auto &entry : local_ref_index) {
+					auto &dest = ref_index[entry.first];
+
+					// Minor optimisation: copy the fewest elements possible
+					if (dest.size() < entry.second.size())
+						swap(dest, entry.second);
+
+					dest.reserve(dest.size() + entry.second.size());
+					
+					move(entry.second.begin(), entry.second.end(), back_inserter(dest));
+				}
 			}
 		}));
 
@@ -256,18 +289,8 @@ int main(int argc, char *argv[])
 		stop(queue, workers);
 
 		if (verbose)
-			cerr << "Read " << refs.size() << " documents into memory" << endl;
-
-		if (verbose)
 			cerr << "Load queue performance:\n" << queue.performance();
 	}
-
-	// Build an index
-	// TODO no duplicate work
-	unordered_map<NGram, vector<pair<uint64_t,float>>> ref_index;
-	for (auto const &ref : refs)
-		for (auto const &entry : ref.wordvec)
-			ref_index[entry.first].emplace_back(ref.id, entry.second);
 
 	// Start reading the other set of documents we match against and do the matching.
 	{
@@ -296,19 +319,19 @@ int main(int argc, char *argv[])
 		// Function used to report the score. Implementation depends on whether
 		// we are doing print_all or not. Mutex is necessary for both cases,
 		// either for writing to top_scores or for printing to stdout.
-		function<void (float, uint64_t in_ref, uint64_t en_ref)> mark_score;
+		function<void (float, size_t in_ref, size_t en_ref)> mark_score;
 		mutex mark_score_mutex;
 
 		// Scores for all pairs (that meet the threshold). Only used with 
 		vector<DocumentPair> scored_pairs;
 
 		if (!print_all) {
-			mark_score = [&scored_pairs, &mark_score_mutex] (float score, uint64_t in_ref, uint64_t en_ref) {
+			mark_score = [&scored_pairs, &mark_score_mutex] (float score, size_t in_ref, size_t en_ref) {
 				unique_lock<mutex> lock(mark_score_mutex);
 				scored_pairs.push_back({score, in_ref, en_ref});
 			};
 		} else {
-			mark_score = [&mark_score_mutex](float score, uint64_t in_ref, uint64_t en_ref) {
+			mark_score = [&mark_score_mutex](float score, size_t in_ref, size_t en_ref) {
 				unique_lock<mutex> lock(mark_score_mutex);
 				print_score(score, in_ref, en_ref);
 			};
@@ -322,15 +345,19 @@ int main(int argc, char *argv[])
 					break;
 
 				unordered_map<size_t, float> ref_scores;
-
+				
 				for (auto const &ngram : doc_ref->wordvec) {
+					// Search ngram hash (uint64_t) in ref_index
 					auto it = ref_index.find(ngram.first);
 					
 					if (it == ref_index.end())
 						continue;
 					
+					// it->second now points to a vector of document-ngram-score.
+					// Each element in that vector is a pair with doc_id and
+					// tfidf for that doc & term combo.
 					for (auto const &ref_ngram : it->second)
-						ref_scores[ref_ngram.first] += ngram.second * ref_ngram.second;
+						ref_scores[ref_ngram.doc_id] += ngram.second * ref_ngram.score;
 				}
 
 				for (auto const &ref : ref_scores)
