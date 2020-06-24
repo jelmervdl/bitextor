@@ -88,7 +88,7 @@ docenc -d < plain_text.gz \
 
 # b64filter
 ```
-Usage: b64filter command
+Usage: b64filter command [ args... ]
 ```
 
 Again, an example shows much more:
@@ -98,6 +98,19 @@ gzip -cd plain_text.gz \
 	| gzip -c \
 	> very_loud_text.gz
 ```
+
+# foldfilter
+Think of it as a wrapper version of [fold](https://linux.die.net/man/1/fold).
+
+Wrap an MT system that does not like long sentences and this tool chops those
+lines (assuming each line is a single sentence) temporarily into multiple lines.
+It uses some heuristics to determine where to break up lines, but if it can't
+find a good break point it will still just chop words in half.
+
+```
+Usage: foldfilter [ -w INT ] command [ args ... ]
+```
+
 
 # Building on CSD3
 ```

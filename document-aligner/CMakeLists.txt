@@ -62,6 +62,11 @@ target_link_libraries(docenc preprocess_util)
 add_executable(b64filter b64filter.cpp ${dalign_cpp_headers} ${dalign_cpp_cpp})
 target_link_libraries(b64filter preprocess_util)
 
+# Seriously I should have called it folter but then nobody knows what it does.
+# Now it's just unix fold + fp filter. No man page necessary to explain that!
+add_executable(foldfilter foldfilter.cpp ${dalign_cpp_headers} ${dalign_cpp_cpp})
+target_link_libraries(foldfilter preprocess_util)
+
 if (BUILD_TESTING)
   add_executable(ngram_test tests/ngram_test.cpp ${dalign_cpp_headers} ${dalign_cpp_cpp})
   target_compile_definitions(ngram_test PRIVATE "BOOST_TEST_DYN_LINK=1")
