@@ -1,5 +1,5 @@
 #include <thread>
-#include <vector>
+#include <deque>
 #include "util/exception.hh"
 #include "util/pcqueue.hh"
 #include "util/file_stream.hh"
@@ -19,8 +19,10 @@ static char delimiters[]{':', ',', ' ', '-', '.'};
 // index can never really high.
 static unsigned char is_delimiter[UCHAR_MAX + 1]{0};
 
-vector<StringPiece> wrap_lines(StringPiece const &line, size_t column_width) {
-	vector<StringPiece> out;
+pair<deque<StringPiece>,deque<string>> wrap_lines(StringPiece const &line, size_t column_width) {
+	deque<StringPiece> out_lines;
+
+	deque<string> out_delimiters;
 
 	size_t pos_last_cut = 0;
 
@@ -37,29 +39,34 @@ vector<StringPiece> wrap_lines(StringPiece const &line, size_t column_width) {
 			continue;
 
 		// Last resort if we didn't break on a delimiter: just chop where we are
-		size_t pos_cut = pos + 1;
+		size_t pos_cut = pos;
 
 		for (size_t i = 0; i < sizeof(delimiters) / sizeof(char); ++i) {
 			if (pos_delimiter[i] > pos_last_cut) {
-				pos_cut = pos_delimiter[i] + 1;
+				pos_cut = pos_delimiter[i];
 				break;
 			}
 		}
 
+		size_t pos_cut_end = pos_cut + 1;
+
 		// Peek ahead to were after the cut we encounter our first not-a-delimiter
 		// because that's the real point were we resume.
-		while (pos_cut < line.size() && is_delimiter[static_cast<unsigned char>(line.data()[pos_cut])] != 0)
-			++pos_cut;
+		while (pos_cut_end < line.size() && is_delimiter[static_cast<unsigned char>(line.data()[pos_cut_end])] != 0)
+			++pos_cut_end;
 
-		out.push_back(line.substr(pos_last_cut, pos_cut - pos_last_cut));
-		pos_last_cut = pos_cut;
+		out_lines.push_back(line.substr(pos_last_cut, pos_cut - pos_last_cut));
+		out_delimiters.emplace_back(line.substr(pos_cut, pos_cut_end - pos_cut).data(), pos_cut_end - pos_cut);
+		pos_last_cut = pos_cut_end;
 	}
 
 	// Push out any trailing bits
-	if (pos_last_cut < pos)
-		out.push_back(line.substr(pos_last_cut, pos - pos_last_cut));
+	if (pos_last_cut < pos) {
+		out_lines.push_back(line.substr(pos_last_cut, pos - pos_last_cut));
+		out_delimiters.push_back("");
+	}
 
-	return out;
+	return make_pair(out_lines, out_delimiters);
 }
 
 int main(int argc, char **argv) {
@@ -81,13 +88,13 @@ int main(int argc, char **argv) {
 	for (size_t i = 0; i < sizeof(delimiters) / sizeof(char); ++i)
 		is_delimiter[static_cast<unsigned char>(delimiters[i])] = i + 1; // plus one because 0 = false = no delimiter
 
-	SingleProducerQueue<size_t> line_cnt_queue;
+	SingleProducerQueue<deque<string>> queue;
 
 	subprocess child(argv[1]);
 
 	child.start(argv + 1);
 
-	thread feeder([&child, &line_cnt_queue, column_width]() {
+	thread feeder([&child, &queue, column_width]() {
 		util::FilePiece in(STDIN_FILENO);
 		util::FileStream child_in(child.in.get());
 
@@ -95,47 +102,51 @@ int main(int argc, char **argv) {
 			// Initialize with a single line. Because even if our sentence is
 			// empty it is still a line that needs to go through the whole
 			// thing.
-			vector<StringPiece> lines{sentence};
+			deque<StringPiece> lines{sentence};
+			deque<string> delimiters{""};
 
 			// If there is anything that needs chopping, let's go chopping.
 			if (sentence.size() > column_width)
-				lines = wrap_lines(sentence, column_width);
+				tie(lines, delimiters) = wrap_lines(sentence, column_width);
 
 			// Tell the reader that there will be N lines to read to reconstruct
 			// this sentence.
-			line_cnt_queue.Produce(lines.size());
+			queue.Produce(delimiters);
 
 			// Feed the document to the child.
 			// Might block because it can cause a flush.
-			for (auto const &line : lines) {
-				child_in << line << "\n";
-			}
+			for (auto const &line : lines)
+				child_in << line << '\n';
 		}
 
 		// Tell the reader to stop
-		line_cnt_queue.Produce(0);
+		queue.Produce(deque<string>());
 
 		// Flush (blocks) & close the child's stdin
 		child_in.flush();
 		child.in.reset();
 	});
 
-	thread reader([&child, &line_cnt_queue, column_width]() {
+	thread reader([&child, &queue, column_width]() {
 		util::FileStream out(STDOUT_FILENO);
 		util::FilePiece child_out(child.out.release());
 
-		size_t line_cnt;
+		deque<string> delimiters;
 		string sentence;
 
-		while (line_cnt_queue.Consume(line_cnt) > 0) {
+		while (queue.Consume(delimiters).size() > 0) {
 			sentence.clear();
-			sentence.reserve(line_cnt * 2 * column_width);
+			
+			// Let's assume that the wrapped process plus the chopped off
+			// delimiters won't be more than twice the input we give it.
+			sentence.reserve(delimiters.size() * 2 * column_width);
 
 			try {
-				while (line_cnt-- > 0) {
+				while (delimiters.size() > 0) {
 					StringPiece line(child_out.ReadLine());
 					sentence.append(line.data(), line.length());
-					// do we need to add a space?
+					sentence.append(delimiters.front());
+					delimiters.pop_front();
 				}
 			} catch (util::EndOfFileException &e) {
 				UTIL_THROW(util::Exception, "Sub-process stopped producing while expecting more lines");
@@ -149,14 +160,14 @@ int main(int argc, char **argv) {
 
 			// Just to check, next time we call Consume(), will we block? If so,
 			// that means we've caught up with the producer. However, the order
-			// the producer fills line_cnt_queue is first giving us a new line-
+			// the producer fills queue is first giving us a new line-
 			// count and then sending the input to the sub-process. So if we do
 			// not have a new line count yet, the sub-process definitely can't
 			// have new output yet, and peek should block and once it unblocks
 			// we expect to have that line-count waiting. If we still don't,
 			// then what is this output that is being produced by the sub-
 			// process?
-			if (line_cnt_queue.Empty()) {
+			if (queue.Empty()) {
 				// If peek throws EOF now our sub-process stopped before its
 				// stdin was closed (producer produces the poison before it
 				// closes the sub-process's stdin.)
@@ -165,7 +176,7 @@ int main(int argc, char **argv) {
 				// peek() came back. We have a line-number now, right? If not
 				// sub-process is producing output without any input to base it
 				// on. Which is bad.
-				if (line_cnt_queue.Empty())
+				if (queue.Empty())
 					UTIL_THROW(util::Exception, "sub-process is producing more output than it was given input");
 			}
 		}
