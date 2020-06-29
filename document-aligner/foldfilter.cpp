@@ -134,7 +134,7 @@ int main(int argc, char **argv) {
 		deque<string> delimiters;
 		string sentence;
 
-		while (queue.Consume(delimiters).size() > 0) {
+		for (size_t sentence_num = 1; queue.Consume(delimiters).size() > 0; ++sentence_num) {
 			sentence.clear();
 			
 			// Let's assume that the wrapped process plus the chopped off
@@ -142,14 +142,14 @@ int main(int argc, char **argv) {
 			sentence.reserve(delimiters.size() * 2 * column_width);
 
 			try {
-				while (delimiters.size() > 0) {
+				while (!delimiters.empty()) {
 					StringPiece line(child_out.ReadLine());
 					sentence.append(line.data(), line.length());
 					sentence.append(delimiters.front());
 					delimiters.pop_front();
 				}
 			} catch (util::EndOfFileException &e) {
-				UTIL_THROW(util::Exception, "Sub-process stopped producing while expecting more lines");
+				UTIL_THROW(util::Exception, "Sub-process stopped producing while expecting more lines for sentence " << sentence_num << ".");
 			}
 
 			// Yes, this might introduce a newline at the end of the file, but
@@ -184,6 +184,10 @@ int main(int argc, char **argv) {
 
 	int retval = child.wait();
 
+	// Order here doesn't matter that much. If either of the threads is blocked
+	// while the other finishes, it's an error state and the finishing thread
+	// will finish with an uncaught exception, which will just terminate()
+	// everything.
 	feeder.join();
 	reader.join();
 	
