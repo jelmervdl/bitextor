@@ -1,5 +1,6 @@
 #include <thread>
 #include <deque>
+#include <climits>
 #include "util/exception.hh"
 #include "util/pcqueue.hh"
 #include "util/file_stream.hh"
