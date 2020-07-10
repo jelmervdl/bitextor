@@ -34,20 +34,20 @@ pair<deque<StringPiece>,deque<string>> wrap_lines(StringPiece const &line, size_
 	deque<string> out_delimiters;
 
 	// Current byte position
-	size_t pos = 0;
+	int32_t pos = 0;
 
 	// Length of line in bytes
-	size_t length = line.size();
+	int32_t length = line.size();
 	
 	// Byte position of last cut-off point
-	size_t pos_last_cut = 0;
+	int32_t pos_last_cut = 0;
 
 	// For each delimiter the byte position of its last occurrence
-	size_t pos_delimiter[extent<decltype(delimiters)>::value]{0};
+	int32_t pos_delimiter[extent<decltype(delimiters)>::value]{0};
 
 	// Position of the first delimiter we encountered up to pos. Reset
 	// to pos + next char if it's not a delimiter.
-	size_t pos_first_delimiter;
+	int32_t pos_first_delimiter;
 
 	while (pos < length) {
 		UChar32 character;
@@ -69,11 +69,11 @@ pair<deque<StringPiece>,deque<string>> wrap_lines(StringPiece const &line, size_
 		}
 
 		// Do we need to introduce a break?
-		if (pos - pos_last_cut < column_width)
+		if (pos - pos_last_cut < static_cast<int32_t>(column_width))
 			continue;
 
 		// Last resort if we didn't break on a delimiter: just chop where we are
-		size_t pos_cut = pos;
+		int32_t pos_cut = pos;
 
 		// Find a more ideal break point by looking back for a delimiter
 		for (size_t i = 0; i < extent<decltype(delimiters)>::value; ++i) {
@@ -84,7 +84,7 @@ pair<deque<StringPiece>,deque<string>> wrap_lines(StringPiece const &line, size_
 		}
 
 		// Assume we cut without delimiters (i.e. the last resort scenario)
-		size_t pos_cut_end = pos_cut;
+		int32_t pos_cut_end = pos_cut;
 
 		// Peek ahead to were after the cut we encounter our first not-a-delimiter
 		// because that's the point were we resume.
