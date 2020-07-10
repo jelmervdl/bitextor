@@ -1,10 +1,12 @@
 #include <thread>
 #include <deque>
 #include <climits>
+#include <type_traits>
 #include "util/exception.hh"
 #include "util/pcqueue.hh"
 #include "util/file_stream.hh"
 #include "util/file_piece.hh"
+#include "util/utf8.hh"
 #include "src/single_producer_queue.h"
 #include "src/subprocess.h"
 
@@ -13,12 +15,18 @@ using namespace bitextor;
 
 // Order determines preference: the first one of these to occur in the
 // line will determine the wrapping point.
-static char delimiters[]{':', ',', ' ', '-', '.'};
+static UChar32 delimiters[]{':', ',', ' ', '-', '.'};
 
 // is_delimiter functions as lookup table for checking quickly whether a char
 // is a delimiter, and if so, at what position it lives. uchar because that
 // index can never really high.
-static unsigned char is_delimiter[UCHAR_MAX + 1]{0};
+size_t is_delimiter(UChar32 character) {
+	for (size_t i = 0; i < extent<decltype(delimiters)>::value; ++i)
+		if (character == delimiters[i])
+			return i + 1;
+
+	return false;
+}
 
 pair<deque<StringPiece>,deque<string>> wrap_lines(StringPiece const &line, size_t column_width) {
 	deque<StringPiece> out_lines;
@@ -28,37 +36,58 @@ pair<deque<StringPiece>,deque<string>> wrap_lines(StringPiece const &line, size_
 	size_t pos_last_cut = 0;
 
 	size_t pos = 0;
-	
-	size_t pos_delimiter[sizeof(delimiters) / sizeof(char)]{0};
 
-	for (; pos < line.size(); ++pos) {
-		if (unsigned char delimiter_idx = is_delimiter[static_cast<unsigned char>(line.data()[pos])])
+	size_t length = line.size();
+	
+	size_t pos_delimiter[extent<decltype(delimiters)>::value]{0};
+
+	while (pos < length) {
+		UChar32 character;
+
+		U8_NEXT(line.data(), pos, length, character);
+		cerr << pos << endl;
+		if (character < 0)
+			throw utf8::NotUTF8Exception(line);
+
+		if (size_t delimiter_idx = is_delimiter(character))
 			pos_delimiter[delimiter_idx - 1] = pos;
 
 		// Do we need to introduce a break?
+		// Note: we're comparing byte positions. Even though we're taking UTF8
+		// into account we still behave like fold, wrapping on bytes. Not sure
+		// whether that's okay. Marian has limits on number of tokens so not
+		// comparable anyway, Moses... I don't know?
 		if (pos - pos_last_cut < column_width)
 			continue;
 
 		// Last resort if we didn't break on a delimiter: just chop where we are
 		size_t pos_cut = pos;
 
-		for (size_t i = 0; i < sizeof(delimiters) / sizeof(char); ++i) {
+		for (size_t i = 0; i < extent<decltype(delimiters)>::value; ++i) {
 			if (pos_delimiter[i] > pos_last_cut) {
 				pos_cut = pos_delimiter[i];
 				break;
 			}
 		}
 
-		size_t pos_cut_end = pos_cut + 1;
+		// Assume we cut without delimiters (i.e. the last resort scenario)
+		size_t pos_cut_end = pos_cut;
 
 		// Peek ahead to were after the cut we encounter our first not-a-delimiter
-		// because that's the real point were we resume.
-		while (pos_cut_end < line.size() && is_delimiter[static_cast<unsigned char>(line.data()[pos_cut_end])] != 0)
-			++pos_cut_end;
+		// because that's the point were we resume.
+		while (pos_cut_end < length) {
+			U8_NEXT(line.data(), pos_cut_end, length, character);
+			if (character < 0)
+				throw utf8::NotUTF8Exception(line);
+			
+			if (!is_delimiter(character))
+				break;
+		}
 
 		out_lines.push_back(line.substr(pos_last_cut, pos_cut - pos_last_cut));
 		out_delimiters.emplace_back(line.substr(pos_cut, pos_cut_end - pos_cut).data(), pos_cut_end - pos_cut);
 		pos_last_cut = pos_cut_end;
+		pos = pos_cut_end;
 	}
 
 	// Push out any trailing bits
@@ -85,9 +114,6 @@ int main(int argc, char **argv) {
 		cerr << "usage: " << program_name << " [-w width] command [command-args ...]\n";
 		return 1;
 	}
-
-	for (size_t i = 0; i < sizeof(delimiters) / sizeof(char); ++i)
-		is_delimiter[static_cast<unsigned char>(delimiters[i])] = i + 1; // plus one because 0 = false = no delimiter
 
 	SingleProducerQueue<deque<string>> queue;
 
