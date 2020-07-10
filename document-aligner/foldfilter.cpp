@@ -33,36 +33,49 @@ pair<deque<StringPiece>,deque<string>> wrap_lines(StringPiece const &line, size_
 
 	deque<string> out_delimiters;
 
-	size_t pos_last_cut = 0;
-
+	// Current byte position
 	size_t pos = 0;
 
+	// Length of line in bytes
 	size_t length = line.size();
 	
+	// Byte position of last cut-off point
+	size_t pos_last_cut = 0;
+
+	// For each delimiter the byte position of its last occurrence
 	size_t pos_delimiter[extent<decltype(delimiters)>::value]{0};
+
+	// Position of the first delimiter we encountered up to pos. Reset
+	// to pos + next char if it's not a delimiter.
+	size_t pos_first_delimiter;
 
 	while (pos < length) {
 		UChar32 character;
 
 		U8_NEXT(line.data(), pos, length, character);
-		cerr << pos << endl;
+		
 		if (character < 0)
 			throw utf8::NotUTF8Exception(line);
 
-		if (size_t delimiter_idx = is_delimiter(character))
-			pos_delimiter[delimiter_idx - 1] = pos;
+		if (size_t delimiter_idx = is_delimiter(character)) {
+			// Store pos_first_delimiter instead of pos because when we have
+			// consecutive delimiters we want to chop em all off, even when
+			// our ideal delimiter is somewhere in the middle.
+			pos_delimiter[delimiter_idx - 1] = pos_first_delimiter;
+		} else {
+			// Maybe the next char is a delimiter? pos is pointing to the next
+			// one right now, U8_NEXT incremented it.
+			pos_first_delimiter = pos;
+		}
 
 		// Do we need to introduce a break?
-		// Note: we're comparing byte positions. Even though we're taking UTF8
-		// into account we still behave like fold, wrapping on bytes. Not sure
-		// whether that's okay. Marian has limits on number of tokens so not
-		// comparable anyway, Moses... I don't know?
 		if (pos - pos_last_cut < column_width)
 			continue;
 
 		// Last resort if we didn't break on a delimiter: just chop where we are
 		size_t pos_cut = pos;
 
+		// Find a more ideal break point by looking back for a delimiter
 		for (size_t i = 0; i < extent<decltype(delimiters)>::value; ++i) {
 			if (pos_delimiter[i] > pos_last_cut) {
 				pos_cut = pos_delimiter[i];
