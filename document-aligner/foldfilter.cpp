@@ -146,7 +146,7 @@ int main(int argc, char **argv) {
 			deque<string> delimiters{""};
 
 			// If there is anything that needs chopping, let's go chopping.
-			if (sentence.size() > column_width)
+			if (static_cast<size_t>(sentence.size()) > column_width)
 				tie(lines, delimiters) = wrap_lines(sentence, column_width);
 
 			// Tell the reader that there will be N lines to read to reconstruct
