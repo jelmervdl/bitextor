@@ -42,7 +42,7 @@ size_t find_delimiter(vector<UChar32> const &delimiters, UChar32 character) {
 		if (character == delimiters[i])
 			return i;
 
-	return -1;
+	return not_found;
 }
 
 pair<deque<StringPiece>,deque<string>> wrap_lines(StringPiece const &line, wrap_options const &options) {
