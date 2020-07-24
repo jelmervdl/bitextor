@@ -15,11 +15,8 @@ using namespace bitextor;
 
 // Order determines preference: the first one of these to occur in the
 // line will determine the wrapping point.
-static UChar32 delimiters[]{':', ',', ' ', '-', '.'};
+static UChar32 delimiters[]{':', ',', ' ', '-', '.', '/'};
 
-// is_delimiter functions as lookup table for checking quickly whether a char
-// is a delimiter, and if so, at what position it lives. uchar because that
-// index can never really high.
 size_t is_delimiter(UChar32 character) {
 	for (size_t i = 0; i < extent<decltype(delimiters)>::value; ++i)
 		if (character == delimiters[i])
