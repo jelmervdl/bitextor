@@ -1,6 +1,8 @@
 #include <thread>
 #include <deque>
+#include <vector>
 #include <climits>
+#include <cstring>
 #include <type_traits>
 #include "util/exception.hh"
 #include "util/pcqueue.hh"
@@ -13,19 +15,37 @@
 using namespace std;
 using namespace bitextor;
 
-// Order determines preference: the first one of these to occur in the
-// line will determine the wrapping point.
-static UChar32 delimiters[]{':', ',', ' ', '-', '.', '/'};
+constexpr size_t not_found = -1;
 
-size_t is_delimiter(UChar32 character) {
-	for (size_t i = 0; i < extent<decltype(delimiters)>::value; ++i)
+struct wrap_options {
+	// Maximum number of bytes (not unicode characters!) that may end up in a
+	// single line.
+	size_t column_width = 40;
+
+	// Keep delimiters in the split lines, or separate them out into their own
+	// queue.
+	bool keep_delimiters = true;
+
+	// Order determines preference: the first one of these to occur in the
+	// line will determine the wrapping point.
+	vector<UChar32> delimiters{':', ',', ' ', '-', '.', '/'};
+};
+
+struct program_options : wrap_options {
+	// argv for wrapped command. Should start with the program name and end
+	// with NULL.
+	char **child_argv = 0;
+};
+
+size_t find_delimiter(vector<UChar32> const &delimiters, UChar32 character) {
+	for (size_t i = 0; i < delimiters.size(); ++i)
 		if (character == delimiters[i])
-			return i + 1;
+			return i;
 
-	return false;
+	return -1;
 }
 
-pair<deque<StringPiece>,deque<string>> wrap_lines(StringPiece const &line, size_t column_width) {
+pair<deque<StringPiece>,deque<string>> wrap_lines(StringPiece const &line, wrap_options const &options) {
 	deque<StringPiece> out_lines;
 
 	deque<string> out_delimiters;
@@ -40,7 +60,7 @@ pair<deque<StringPiece>,deque<string>> wrap_lines(StringPiece const &line, size_
 	int32_t pos_last_cut = 0;
 
 	// For each delimiter the byte position of its last occurrence
-	int32_t pos_delimiter[extent<decltype(delimiters)>::value]{0};
+	vector<int32_t> pos_delimiters(options.delimiters.size(), 0);
 
 	// Position of the first delimiter we encountered up to pos. Reset
 	// to pos + next char if it's not a delimiter.
@@ -54,28 +74,30 @@ pair<deque<StringPiece>,deque<string>> wrap_lines(StringPiece const &line, size_
 		if (character < 0)
 			throw utf8::NotUTF8Exception(line);
 
-		if (size_t delimiter_idx = is_delimiter(character)) {
+		size_t delimiter_idx = find_delimiter(options.delimiters, character);
+
+		if (delimiter_idx != not_found) {
 			// Store pos_first_delimiter instead of pos because when we have
 			// consecutive delimiters we want to chop em all off, even when
 			// our ideal delimiter is somewhere in the middle.
-			pos_delimiter[delimiter_idx - 1] = pos_first_delimiter;
+			pos_delimiters[delimiter_idx] = pos_first_delimiter;
 		} else {
 			// Maybe the next char is a delimiter? pos is pointing to the next
 			// one right now, U8_NEXT incremented it.
 			pos_first_delimiter = pos;
 		}
 
-		// Do we need to introduce a break?
-		if (pos - pos_last_cut < static_cast<int32_t>(column_width))
+		// Do we need to introduce a break? If not, move to next character
+		if (pos - pos_last_cut < static_cast<int32_t>(options.column_width))
 			continue;
 
 		// Last resort if we didn't break on a delimiter: just chop where we are
 		int32_t pos_cut = pos;
 
 		// Find a more ideal break point by looking back for a delimiter
-		for (size_t i = 0; i < extent<decltype(delimiters)>::value; ++i) {
-			if (pos_delimiter[i] > pos_last_cut) {
-				pos_cut = pos_delimiter[i];
+		for (int32_t const &pos_delimiter : pos_delimiters) {
+			if (pos_delimiter > pos_last_cut) {
+				pos_cut = pos_delimiter;
 				break;
 			}
 		}
@@ -85,23 +107,39 @@ pair<deque<StringPiece>,deque<string>> wrap_lines(StringPiece const &line, size_
 
 		// Peek ahead to were after the cut we encounter our first not-a-delimiter
 		// because that's the point were we resume.
-		while (pos_cut_end < length) {
-			U8_NEXT(line.data(), pos_cut_end, length, character);
+		for (int32_t pos_next = pos_cut_end; pos_cut_end < length; pos_cut_end = pos_next) {
+			// When we're not skipping delimiters, don't send more bytes than
+			// column_width in total a single line, even though we try to keep
+			// the delimiters together.
+			if (options.keep_delimiters && pos_cut_end - pos_last_cut >= static_cast<int32_t>(options.column_width))
+				break;
+
+			U8_NEXT(line.data(), pos_next, length, character);
+
 			if (character < 0)
 				throw utf8::NotUTF8Exception(line);
-			
-			if (!is_delimiter(character))
+
+			// First character after pos_cut is probably a delimiter, unless
+			// we did a hard stop in the middle of a word, and we're not keeping
+			// the delimiters.
+			if (find_delimiter(options.delimiters, character) == not_found)
 				break;
 		}
 
-		out_lines.push_back(line.substr(pos_last_cut, pos_cut - pos_last_cut));
-		out_delimiters.emplace_back(line.substr(pos_cut, pos_cut_end - pos_cut).data(), pos_cut_end - pos_cut);
+		if (options.keep_delimiters) {
+			out_lines.push_back(line.substr(pos_last_cut, pos_cut_end - pos_last_cut));
+			out_delimiters.emplace_back("");
+		} else {
+			out_lines.push_back(line.substr(pos_last_cut, pos_cut - pos_last_cut));
+			out_delimiters.emplace_back(line.substr(pos_cut, pos_cut_end - pos_cut).data(), pos_cut_end - pos_cut);
+		}
+
 		pos_last_cut = pos_cut_end;
 		pos = pos_cut_end;
 	}
 
-	// Push out any trailing bits
-	if (pos_last_cut < pos) {
+	// Push out any trailing bits. Or the empty bit.
+	if (pos_last_cut < pos || pos == 0) {
 		out_lines.push_back(line.substr(pos_last_cut, pos - pos_last_cut));
 		out_delimiters.push_back("");
 	}
@@ -109,45 +147,96 @@ pair<deque<StringPiece>,deque<string>> wrap_lines(StringPiece const &line, size_
 	return make_pair(out_lines, out_delimiters);
 }
 
+int usage(char **argv) {
+	cerr << "usage: " << argv[0] << " [-w width] [-s] [-h] command [command-args ...]\n"
+		    "\n"
+		    "Options:\n"
+		    "  -h        Display help\n"
+		    "  -w <num>  Wrap lines to have at most <num> bytes\n"
+		    "  -d <str>  Specify punctuation to break on. Order determines preference.\n"
+		    "  -s        Skip passing punctuation around wrapping points to the command\n";
+	return 1;
+}
+
+vector<UChar32> parse_delimiters(char *value) {
+	int32_t length = strlen(value);
+	int32_t pos = 0;
+	
+	vector<UChar32> delimiters;
+	delimiters.reserve(length);
+
+	while (pos < length) {
+		UChar32 delimiter;
+		U8_NEXT(value, pos, length, delimiter);
+		
+		if (delimiter < 0)
+			throw utf8::NotUTF8Exception(value);
+		
+		delimiters.push_back(delimiter);
+	}
+
+	return delimiters;
+}
+
+void parse_options(program_options &options, int argc, char **argv) {
+	while (true) {
+		switch(getopt(argc, argv, "w:d:sh")) {
+			case 'w':
+				options.column_width = atoi(optarg);
+				continue;
+
+			case 'd':
+				options.delimiters = parse_delimiters(optarg);
+				continue;
+
+			case 's':
+				options.keep_delimiters = false;
+				continue;
+
+			case 'h':
+			case '?':
+			default:
+				exit(usage(argv));
+
+			case -1:
+				break;
+		}
+		break;
+	}
+
+	if (optind == argc)
+		exit(usage(argv));
+
+	options.child_argv = argv + optind;
+}
+
 int main(int argc, char **argv) {
-	char *program_name = argv[0];
+	program_options options;
 
-	size_t column_width = 40;
-
-	if (argc > 2 && string(argv[1]) == "-w") {
-		column_width = atoi(argv[2]);
-		argv += 2;
-		argc -= 2;
-	}
-
-	if (argc < 2) {
-		cerr << "usage: " << program_name << " [-w width] command [command-args ...]\n";
-		return 1;
-	}
+	parse_options(options, argc, argv);
 
 	SingleProducerQueue<deque<string>> queue;
 
-	subprocess child(argv[1]);
+	subprocess child(options.child_argv[0]);
 
-	child.start(argv + 1);
+	child.start(options.child_argv);
 
-	thread feeder([&child, &queue, column_width]() {
+	thread feeder([&child, &queue, &options]() {
 		util::FilePiece in(STDIN_FILENO);
 		util::FileStream child_in(child.in.get());
 
 		for (StringPiece sentence : in) {
-			// Initialize with a single line. Because even if our sentence is
-			// empty it is still a line that needs to go through the whole
-			// thing.
-			deque<StringPiece> lines{sentence};
-			deque<string> delimiters{""};
+			deque<StringPiece> lines;
+			deque<string> delimiters;
 
-			// If there is anything that needs chopping, let's go chopping.
-			if (static_cast<size_t>(sentence.size()) > column_width)
-				tie(lines, delimiters) = wrap_lines(sentence, column_width);
+			// If there is nothing to wrap, it will end up with a single line
+			// and a single empty delimiter.
+			tie(lines, delimiters) = wrap_lines(sentence, options);
+			// assert(lines.size() == delimiters.size());
 
-			// Tell the reader that there will be N lines to read to reconstruct
-			// this sentence.
+			// When we're keeping delimiters all of these will be empty strings
+			// but their amount at least will tell the reader thread how many
+			// lines it needs to consume to reconstruct the single line.
 			queue.Produce(delimiters);
 
 			// Feed the document to the child.
@@ -164,7 +253,7 @@ int main(int argc, char **argv) {
 		child.in.reset();
 	});
 
-	thread reader([&child, &queue, column_width]() {
+	thread reader([&child, &queue, &options]() {
 		util::FileStream out(STDOUT_FILENO);
 		util::FilePiece child_out(child.out.release());
 
@@ -176,7 +265,7 @@ int main(int argc, char **argv) {
 			
 			// Let's assume that the wrapped process plus the chopped off
 			// delimiters won't be more than twice the input we give it.
-			sentence.reserve(delimiters.size() * 2 * column_width);
+			sentence.reserve(delimiters.size() * 2 * options.column_width);
 
 			try {
 				while (!delimiters.empty()) {
