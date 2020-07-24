@@ -20,7 +20,7 @@ constexpr size_t not_found = -1;
 struct wrap_options {
 	// Maximum number of bytes (not unicode characters!) that may end up in a
 	// single line.
-	size_t column_width = 40;
+	size_t column_width = 80;
 
 	// Keep delimiters in the split lines, or separate them out into their own
 	// queue.
