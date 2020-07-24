@@ -64,7 +64,7 @@ pair<deque<StringPiece>,deque<string>> wrap_lines(StringPiece const &line, wrap_
 
 	// Position of the first delimiter we encountered up to pos. Reset
 	// to pos + next char if it's not a delimiter.
-	int32_t pos_first_delimiter;
+	int32_t pos_first_delimiter = 0;
 
 	while (pos < length) {
 		UChar32 character;
