@@ -61,10 +61,13 @@ int main(int argc, char **argv) {
 		util::FileStream out(STDOUT_FILENO);
 		util::FilePiece child_out(child.out.release());
 
+		size_t doc_cnt = 0;
 		size_t line_cnt;
 		string doc;
 
 		while (line_cnt_queue.Consume(line_cnt) > 0) {
+			++doc_cnt;
+
 			doc.clear();
 			doc.reserve(line_cnt * 4096); // 4096 is not a typical line length
 
@@ -75,7 +78,7 @@ int main(int argc, char **argv) {
 					doc.push_back('\n');
 				}
 			} catch (util::EndOfFileException &e) {
-				UTIL_THROW(util::Exception, "Sub-process stopped producing while expecting more lines");
+				UTIL_THROW(util::Exception, "Sub-process stopped producing while expecting more lines while processing document " << doc_cnt);
 			}
 
 			string encoded_doc;
@@ -101,7 +104,7 @@ int main(int argc, char **argv) {
 				// sub-process is producing output without any input to base it
 				// on. Which is bad.
 				if (line_cnt_queue.Empty())
-					UTIL_THROW(util::Exception, "sub-process is producing more output than it was given input");
+					UTIL_THROW(util::Exception, "sub-process is producing more output than it was given input at document " << doc_cnt);
 			}
 		}
 	});
