@@ -180,7 +180,7 @@ vector<UChar32> parse_delimiters(char *value) {
 
 void parse_options(program_options &options, int argc, char **argv) {
 	while (true) {
-		switch(getopt(argc, argv, "w:d:sh")) {
+		switch(getopt(argc, argv, "+w:d:sh")) {
 			case 'w':
 				options.column_width = atoi(optarg);
 				continue;
