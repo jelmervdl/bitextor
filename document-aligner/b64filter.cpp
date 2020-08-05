@@ -10,13 +10,18 @@
 using namespace std;
 using namespace bitextor;
 
+struct Document {
+	size_t line_cnt;
+	bool has_trailing_newline;
+};
+
 int main(int argc, char **argv) {
 	if (argc < 2) {
 		cerr << "usage: " << argv[0] << " command [command-args...]\n";
 		return 1;
 	}
 
-	SingleProducerQueue<size_t> line_cnt_queue;
+	SingleProducerQueue<Document> line_cnt_queue;
 
 	subprocess child(argv[1]);
 
@@ -32,17 +37,21 @@ int main(int argc, char **argv) {
 		for (StringPiece line : in) {
 			base64_decode(line, doc);
 
-			// Make the the document ends with a line ending. This to make sure
+			// Description of the document
+			Document document;
+			document.has_trailing_newline = doc.back() == '\n';
+
+			// Make the the document end with a new line. This to make sure
 			// the next doc we send to the child will be on its own line and the
-			// line_cnt we do is correct.
-			if (doc.back() != '\n')
+			// line_cnt is correct.
+			if (!document.has_trailing_newline)
 				doc.push_back('\n');
 
-			size_t line_cnt = count(doc.cbegin(), doc.cend(), '\n');
+			document.line_cnt = count(doc.cbegin(), doc.cend(), '\n');
 			
 			// Send line count first to the reader, so it can start reading as
 			// soon as we start feeding the document to the child.
-			line_cnt_queue.Produce(line_cnt);
+			line_cnt_queue.Produce(document);
 
 			// Feed the document to the child.
 			// Might block because it can cause a flush.
@@ -50,7 +59,10 @@ int main(int argc, char **argv) {
 		}
 
 		// Tell the reader to stop
-		line_cnt_queue.Produce(0);
+		line_cnt_queue.Produce(Document{
+			.line_cnt = 0,
+			.has_trailing_newline = false
+		});
 
 		// Flush (blocks) & close the child's stdin
 		child_in.flush();
@@ -62,20 +74,25 @@ int main(int argc, char **argv) {
 		util::FilePiece child_out(child.out.release());
 
 		size_t doc_cnt = 0;
-		size_t line_cnt;
+		Document document;
 		string doc;
 
-		while (line_cnt_queue.Consume(line_cnt) > 0) {
+		while (line_cnt_queue.Consume(document).line_cnt > 0) {
 			++doc_cnt;
 
 			doc.clear();
-			doc.reserve(line_cnt * 4096); // 4096 is not a typical line length
+			doc.reserve(document.line_cnt * 4096); // 4096 is not a typical line length
 
 			try {
-				while (line_cnt-- > 0) {
+				while (document.line_cnt-- > 0) {
 					StringPiece line(child_out.ReadLine());
 					doc.append(line.data(), line.length());
-					doc.push_back('\n');
+
+					// ReadLine eats line endings. Between lines we definitely
+					// need to add them back. Whether we add the last one depends
+					// on whether the original document had a trailing newline.
+					if (document.line_cnt > 0 || document.has_trailing_newline)
+						doc.push_back('\n');
 				}
 			} catch (util::EndOfFileException &e) {
 				UTIL_THROW(util::Exception, "Sub-process stopped producing while expecting more lines while processing document " << doc_cnt);
